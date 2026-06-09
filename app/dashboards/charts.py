@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Any
+
+import plotly.graph_objects as go
+from plotly.io import to_html
+
+
+def chart_html(fig: go.Figure) -> str:
+    fig.update_layout(template="plotly_dark", margin={"l": 28, "r": 18, "t": 36, "b": 28}, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    return to_html(fig, include_plotlyjs=False, full_html=False, config={"displayModeBar": False, "responsive": True})
+
+
+def line_chart(rows: list[dict[str, Any]], x: str, y: str, title: str) -> str:
+    fig = go.Figure(go.Scatter(x=[row[x] for row in rows], y=[row[y] for row in rows], mode="lines+markers", line={"color": "#38bdf8"}))
+    fig.update_layout(title=title)
+    return chart_html(fig)
+
+
+def bar_chart(rows: list[dict[str, Any]], x: str, y: str, title: str) -> str:
+    fig = go.Figure(go.Bar(x=[row[x] for row in rows], y=[row[y] for row in rows], marker={"color": "#22c55e"}))
+    fig.update_layout(title=title)
+    return chart_html(fig)
+
+
+def histogram(values: list[float], title: str) -> str:
+    fig = go.Figure(go.Histogram(x=values, marker={"color": "#f59e0b"}))
+    fig.update_layout(title=title)
+    return chart_html(fig)
+
+
+def map_chart(points: list[dict[str, Any]], title: str) -> str:
+    fig = go.Figure(
+        go.Scattermapbox(
+            lat=[point["latitude"] for point in points],
+            lon=[point["longitude"] for point in points],
+            mode="markers",
+            marker={"size": 11, "color": ["#22c55e" if point.get("status") == "moving" else "#f59e0b" for point in points]},
+            text=[point.get("vehicle", "") for point in points],
+        )
+    )
+    fig.update_layout(title=title, mapbox={"style": "open-street-map", "zoom": 3}, height=520)
+    return chart_html(fig)
