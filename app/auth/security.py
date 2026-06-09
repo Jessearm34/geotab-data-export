@@ -93,27 +93,38 @@ def record_login_success(request: Request, username: str) -> None:
 
 
 def establish_authenticated_session(request: Request) -> None:
-    request.session.clear()
-    request.session["authenticated"] = True
-    csrf_token(request)
+    session = request.scope.get("session")
+    if isinstance(session, dict):
+        session.clear()
+        session["authenticated"] = True
+        csrf_token(request)
 
 
 def is_authenticated(request: Request) -> bool:
-    return bool(request.session.get("authenticated"))
+    session = request.scope.get("session")
+    if not isinstance(session, dict):
+        return False
+    return bool(session.get("authenticated"))
 
 
 def csrf_token(request: Request) -> str:
-    token = request.session.get("csrf_token")
+    session = request.scope.get("session")
+    if not isinstance(session, dict):
+        return ""
+    token = session.get("csrf_token")
     if not token:
         token = secrets.token_urlsafe(32)
-        request.session["csrf_token"] = token
+        session["csrf_token"] = token
     return str(token)
 
 
 async def validate_csrf(request: Request, form: FormData | None = None) -> bool:
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return True
-    expected = request.session.get("csrf_token")
+    session = request.scope.get("session")
+    if not isinstance(session, dict):
+        return False
+    expected = session.get("csrf_token")
     actual = request.headers.get("x-csrf-token")
     if form is not None:
         actual = str(form.get("csrf_token") or actual or "")
