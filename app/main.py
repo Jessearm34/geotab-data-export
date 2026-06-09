@@ -66,7 +66,6 @@ configure_logging()
 settings = get_settings()
 
 app, rt = fast_app()
-app.add_middleware(AuthMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret.get_secret_value(),
@@ -74,6 +73,7 @@ app.add_middleware(
     same_site="lax",
     https_only=settings.is_production,
 )
+app.add_middleware(AuthMiddleware)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 _scheduler = start_scheduler()
 
