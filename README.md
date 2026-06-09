@@ -342,7 +342,8 @@ The tests cover:
 
 ## Troubleshooting
 
-- App fails to start with config validation errors: set a strong `SESSION_SECRET` and `ADMIN_PASSWORD_HASH` in production, and all required `GEOTAB_*` variables when `SCHEDULER_ENABLED=true`.
+- App fails to start with config validation errors: set a strong `SESSION_SECRET` and `ADMIN_PASSWORD_HASH` in production.
+- Scheduler fails to start without Geotab credentials: set `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD`, or set `SCHEDULER_ENABLED=false` until Geotab is configured.
 - `Geotab credentials are not configured`: confirm `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD` are set.
 - Login fails in production: set `ADMIN_PASSWORD_HASH`; plain `ADMIN_PASSWORD` is only accepted outside production.
 - No dashboard data: run migrations, confirm the scheduler is enabled, and inspect `sync_logs`.

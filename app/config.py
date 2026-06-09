@@ -55,21 +55,6 @@ class Settings(BaseSettings):
             if not self.admin_password_hash:
                 raise ValueError("ADMIN_PASSWORD_HASH is required when ENVIRONMENT=production")
 
-        if self.scheduler_enabled:
-            missing = [
-                name
-                for name, value in (
-                    ("GEOTAB_DATABASE", self.geotab_database),
-                    ("GEOTAB_USERNAME", self.geotab_username),
-                    ("GEOTAB_PASSWORD", self.geotab_password),
-                )
-                if not value
-            ]
-            if missing:
-                raise ValueError(
-                    f"SCHEDULER_ENABLED=true requires Geotab credentials: {', '.join(missing)}"
-                )
-
         return self
 
     @property
@@ -79,6 +64,24 @@ class Settings(BaseSettings):
     @property
     def is_geotab_configured(self) -> bool:
         return all([self.geotab_database, self.geotab_username, self.geotab_password])
+
+
+def validate_geotab_for_scheduler(settings: Settings) -> None:
+    if not settings.scheduler_enabled:
+        return
+    missing = [
+        name
+        for name, value in (
+            ("GEOTAB_DATABASE", settings.geotab_database),
+            ("GEOTAB_USERNAME", settings.geotab_username),
+            ("GEOTAB_PASSWORD", settings.geotab_password),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"SCHEDULER_ENABLED=true requires Geotab credentials: {', '.join(missing)}"
+        )
 
 
 @lru_cache

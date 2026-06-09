@@ -30,6 +30,16 @@ def test_production_requires_strong_session_secret_and_password_hash(monkeypatch
         Settings()
 
 
+def test_settings_loads_without_geotab_for_migrations(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "true")
+    monkeypatch.delenv("GEOTAB_DATABASE", raising=False)
+    monkeypatch.delenv("GEOTAB_USERNAME", raising=False)
+    monkeypatch.delenv("GEOTAB_PASSWORD", raising=False)
+    _clear_settings_cache()
+    assert Settings().scheduler_enabled is True
+
+
 def test_scheduler_requires_geotab_credentials(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("SCHEDULER_ENABLED", "true")
@@ -37,8 +47,11 @@ def test_scheduler_requires_geotab_credentials(monkeypatch):
     monkeypatch.delenv("GEOTAB_USERNAME", raising=False)
     monkeypatch.delenv("GEOTAB_PASSWORD", raising=False)
     _clear_settings_cache()
-    with pytest.raises(ValidationError, match="SCHEDULER_ENABLED=true requires Geotab credentials"):
-        Settings()
+
+    from app.jobs.scheduler import start_scheduler
+
+    with pytest.raises(RuntimeError, match="SCHEDULER_ENABLED=true requires Geotab credentials"):
+        start_scheduler()
 
 
 def test_admin_password_hash_precedence_over_plain_password(monkeypatch):
