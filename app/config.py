@@ -1,7 +1,10 @@
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEFAULT_SESSION_SECRET = "dev-session-secret"
+_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 
 
 class Settings(BaseSettings):
@@ -9,7 +12,8 @@ class Settings(BaseSettings):
 
     environment: str = Field(default="local", alias="ENVIRONMENT")
     database_url: str = Field(default="sqlite:///./local.db", alias="DATABASE_URL")
-    session_secret: SecretStr = Field(default=SecretStr("dev-session-secret"), alias="SESSION_SECRET")
+    session_secret: SecretStr = Field(default=SecretStr(_DEFAULT_SESSION_SECRET), alias="SESSION_SECRET")
+    session_max_age_seconds: int = Field(default=_SESSION_MAX_AGE_SECONDS, alias="SESSION_MAX_AGE_SECONDS")
 
     admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
     admin_password: SecretStr | None = Field(default=SecretStr("admin"), alias="ADMIN_PASSWORD")
@@ -35,6 +39,42 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+psycopg://", 1)
         return value
+
+    @field_validator("geotab_timeout_seconds", "session_max_age_seconds")
+    @classmethod
+    def validate_positive_seconds(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be a positive integer")
+        return value
+
+    @model_validator(mode="after")
+    def validate_deployment_settings(self) -> "Settings":
+        if self.is_production:
+            if self.session_secret.get_secret_value() == _DEFAULT_SESSION_SECRET:
+                raise ValueError("SESSION_SECRET must be set to a strong random value when ENVIRONMENT=production")
+            if not self.admin_password_hash:
+                raise ValueError("ADMIN_PASSWORD_HASH is required when ENVIRONMENT=production")
+
+        if self.scheduler_enabled:
+            missing = [
+                name
+                for name, value in (
+                    ("GEOTAB_DATABASE", self.geotab_database),
+                    ("GEOTAB_USERNAME", self.geotab_username),
+                    ("GEOTAB_PASSWORD", self.geotab_password),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"SCHEDULER_ENABLED=true requires Geotab credentials: {', '.join(missing)}"
+                )
+
+        return self
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
 
     @property
     def is_geotab_configured(self) -> bool:

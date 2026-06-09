@@ -49,10 +49,12 @@ ADMIN_PASSWORD=<local-admin-password>
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
+GEOTAB_SERVER=my.geotab.com
 ```
 
 Credentials are read only from environment variables. Do not commit `.env`.
+
+If you are not ready to sync from Geotab locally, set `SCHEDULER_ENABLED=false`.
 
 4. Run migrations.
 
@@ -70,30 +72,44 @@ Open `http://localhost:8000`.
 
 ## Admin Authentication
 
-The app uses session-based authentication, CSRF tokens on forms, and password verification through Passlib.
+The app uses signed session cookies, CSRF tokens on state-changing forms, and Passlib bcrypt password verification.
 
-For production, prefer a bcrypt hash:
+Password precedence:
+
+1. `ADMIN_PASSWORD_HASH` is always used when set.
+2. Plain `ADMIN_PASSWORD` is accepted only when `ENVIRONMENT` is not `production`.
+3. In production, plain `ADMIN_PASSWORD` is ignored even if set.
+
+Generate a production password hash:
 
 ```bash
 python -c "from app.auth.security import hash_password; print(hash_password('your-password'))"
 ```
 
-Set `ADMIN_PASSWORD_HASH` in Railway and omit `ADMIN_PASSWORD`.
+Session cookies are `HttpOnly`, use `SameSite=Lax`, and are marked `Secure` when `ENVIRONMENT=production`. Sessions expire after `SESSION_MAX_AGE_SECONDS` (default `28800`, 8 hours). Successful login rotates the session ID.
 
 ## Geotab Configuration
 
-Required Railway variables:
+Use a dedicated **MyGeotab service account** with API access. The app authenticates with Geotab JSON-RPC `Authenticate` using:
+
+- `GEOTAB_DATABASE`
+- `GEOTAB_USERNAME`
+- `GEOTAB_PASSWORD`
+- `GEOTAB_SERVER` (usually `my.geotab.com`)
+
+The client reuses the returned session credentials for subsequent `Get` calls and re-authenticates only when Geotab reports an invalid or expired session. An API key is **not** required for standard MyGeotab service-account login.
+
+Required when `SCHEDULER_ENABLED=true`:
 
 ```bash
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
 GEOTAB_SERVER=my.geotab.com
 GEOTAB_TIMEOUT_SECONDS=30
 ```
 
-The client calls Geotab JSON-RPC `Authenticate` and `Get`. Incremental entities use `fromDate` based on `sync_metadata.last_sync_timestamp`.
+Incremental entities use `fromDate` based on `sync_metadata.last_sync_timestamp`.
 
 ## Scheduled Sync Architecture
 
@@ -162,7 +178,7 @@ ADMIN_PASSWORD_HASH=<bcrypt-hash>
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
+GEOTAB_SERVER=my.geotab.com
 SCHEDULER_ENABLED=true
 SYNC_INTERVAL_MINUTES=15
 ```
@@ -189,13 +205,13 @@ Set these in the Railway service variables:
 ENVIRONMENT=production
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 SESSION_SECRET=<long-random-secret>
+SESSION_MAX_AGE_SECONDS=28800
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=<bcrypt-hash>
 
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
 GEOTAB_SERVER=my.geotab.com
 GEOTAB_TIMEOUT_SECONDS=30
 
@@ -230,29 +246,29 @@ ADMIN_PASSWORD=<local-admin-password>
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
 GEOTAB_SERVER=my.geotab.com
 ```
 
 ### Geotab Connection
 
-The app connects to Geotab through `app/geotab/client.py` using JSON-RPC authentication. Configure the connection only through environment variables:
+The app connects to Geotab through `app/geotab/client.py` using JSON-RPC `Authenticate` against `https://{GEOTAB_SERVER}/apiv1`. Configure the connection only through environment variables:
 
 ```bash
 GEOTAB_DATABASE=<GEOTAB_DATABASE_NAME>
 GEOTAB_USERNAME=<GEOTAB_USERNAME>
 GEOTAB_PASSWORD=<GEOTAB_PASSWORD>
-GEOTAB_API_KEY=<INSERT_GEOTAB_API_KEY_HERE>
 GEOTAB_SERVER=my.geotab.com
 ```
 
-If your Geotab tenant uses a regional or custom server, replace `my.geotab.com`.
+Create a dedicated MyGeotab service account for this app. Use that account's database name, username, and password. If your Geotab tenant uses a regional or custom server, replace `my.geotab.com`.
 
 ### Admin Login
 
-For local development, `ADMIN_PASSWORD` is accepted when `ENVIRONMENT` is not `production`.
+For local development, set `ADMIN_PASSWORD` when `ENVIRONMENT` is not `production`.
 
-For Railway production, generate a password hash:
+For Railway production, set `ENVIRONMENT=production`, a strong `SESSION_SECRET`, and `ADMIN_PASSWORD_HASH`. Plain `ADMIN_PASSWORD` is ignored in production.
+
+Generate a password hash:
 
 ```bash
 python -c "from app.auth.security import hash_password; print(hash_password('your-password'))"
@@ -322,10 +338,12 @@ The tests cover:
 - Analytics calculations.
 - Incremental sync and duplicate prevention.
 - API route authentication behavior.
+- Config validation and auth hardening behavior.
 
 ## Troubleshooting
 
-- `Geotab credentials are not configured`: confirm all `GEOTAB_*` variables are set in Railway.
+- App fails to start with config validation errors: set a strong `SESSION_SECRET` and `ADMIN_PASSWORD_HASH` in production, and all required `GEOTAB_*` variables when `SCHEDULER_ENABLED=true`.
+- `Geotab credentials are not configured`: confirm `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD` are set.
 - Login fails in production: set `ADMIN_PASSWORD_HASH`; plain `ADMIN_PASSWORD` is only accepted outside production.
 - No dashboard data: run migrations, confirm the scheduler is enabled, and inspect `sync_logs`.
 - Database connection errors: Railway may expose `postgres://`; the app normalizes it to `postgresql+psycopg://`.

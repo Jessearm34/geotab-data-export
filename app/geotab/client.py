@@ -11,6 +11,16 @@ from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+_SESSION_ERROR_MARKERS = (
+    "invaliduser",
+    "invalid credentials",
+    "session",
+    "sessionid",
+    "authentication",
+    "not authenticated",
+    "credential",
+)
+
 
 class GeotabAPIError(RuntimeError):
     pass
@@ -27,13 +37,28 @@ class GeotabClient:
         self._credentials: dict[str, Any] | None = None
         self._session = requests.Session()
 
+    @staticmethod
+    def _error_message(error: Any) -> str:
+        if isinstance(error, dict):
+            return str(error.get("message", "Unknown Geotab API error"))
+        return str(error)
+
+    @classmethod
+    def _is_session_error(cls, error: Any, message: str) -> bool:
+        if isinstance(error, dict):
+            name = str(error.get("name", "")).lower()
+            if any(token in name for token in ("session", "invalid", "auth", "credential")):
+                return True
+        lowered = message.lower()
+        return any(marker in lowered for marker in _SESSION_ERROR_MARKERS)
+
     @retry(
-        retry=retry_if_exception_type((requests.RequestException, GeotabAPIError)),
+        retry=retry_if_exception_type((requests.RequestException, GeotabRateLimitError)),
         wait=wait_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(4),
         reraise=True,
     )
-    def _rpc(self, method: str, params: dict[str, Any]) -> Any:
+    def _rpc(self, method: str, params: dict[str, Any], *, allow_reauth: bool = True) -> Any:
         payload = {"method": method, "params": params}
         try:
             response = self._session.post(
@@ -54,7 +79,18 @@ class GeotabClient:
         body = response.json()
         if "error" in body:
             error = body["error"]
-            message = error.get("message", "Unknown Geotab API error") if isinstance(error, dict) else str(error)
+            message = self._error_message(error)
+            if (
+                allow_reauth
+                and method != "Authenticate"
+                and "credentials" in params
+                and self._is_session_error(error, message)
+            ):
+                logger.warning("geotab_session_invalid method=%s", method)
+                self._credentials = None
+                retry_params = dict(params)
+                retry_params["credentials"] = self.authenticate()
+                return self._rpc(method, retry_params, allow_reauth=False)
             raise GeotabAPIError(message)
         return body.get("result")
 
@@ -69,7 +105,18 @@ class GeotabClient:
         }
         if self.settings.geotab_api_key:
             params["apiKey"] = self.settings.geotab_api_key.get_secret_value()
-        result = self._rpc("Authenticate", params)
+
+        try:
+            result = self._rpc("Authenticate", params, allow_reauth=False)
+        except GeotabAPIError:
+            logger.warning(
+                "geotab_auth_failed server=%s database=%s username=%s",
+                self.settings.geotab_server,
+                self.settings.geotab_database,
+                self.settings.geotab_username,
+            )
+            raise
+
         credentials = result.get("credentials", result) if isinstance(result, dict) else result
         if not isinstance(credentials, dict):
             raise GeotabAPIError("Invalid Geotab authentication response")

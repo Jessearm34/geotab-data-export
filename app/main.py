@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -43,7 +44,17 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from app.analytics.services import AnalyticsService
-from app.auth.security import AuthMiddleware, csrf_token, is_authenticated, validate_csrf, verify_admin_password
+from app.auth.security import (
+    AuthMiddleware,
+    csrf_token,
+    establish_authenticated_session,
+    is_authenticated,
+    login_allowed,
+    record_login_failure,
+    record_login_success,
+    validate_csrf,
+    verify_admin_password,
+)
 from app.config import get_settings
 from app.dashboards.charts import bar_chart, histogram, line_chart, map_chart
 from app.database.session import SessionLocal
@@ -56,7 +67,13 @@ settings = get_settings()
 
 app, rt = fast_app()
 app.add_middleware(AuthMiddleware)
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret.get_secret_value(), same_site="lax", https_only=settings.environment == "production")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret.get_secret_value(),
+    max_age=settings.session_max_age_seconds,
+    same_site="lax",
+    https_only=settings.is_production,
+)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 _scheduler = start_scheduler()
 
@@ -137,9 +154,13 @@ async def login_post(request: Request) -> HTMLResponse | RedirectResponse:
         return login_page(request, "Session validation failed.")
     username = str(form.get("username", ""))
     password = str(form.get("password", ""))
-    if username == settings.admin_username and verify_admin_password(password):
-        request.session["authenticated"] = True
+    if not login_allowed(request, username):
+        return login_page(request, "Invalid username or password.")
+    if secrets.compare_digest(username, settings.admin_username) and verify_admin_password(password):
+        record_login_success(request, username)
+        establish_authenticated_session(request)
         return RedirectResponse("/", status_code=303)
+    record_login_failure(request, username)
     return login_page(request, "Invalid username or password.")
 
 
