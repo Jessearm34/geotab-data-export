@@ -343,7 +343,8 @@ The tests cover:
 ## Troubleshooting
 
 - App fails to start with config validation errors: set a strong `SESSION_SECRET` and `ADMIN_PASSWORD_HASH` in production.
-- Scheduler fails to start without Geotab credentials: set `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD`, or set `SCHEDULER_ENABLED=false` until Geotab is configured.
+- Scheduler does not start without Geotab credentials: the app still boots, but sync stays off until `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD` are set (or set `SCHEDULER_ENABLED=false`).
+- Logs show `SQLiteImpl` during migrations: `DATABASE_URL` is not linked to Railway PostgreSQL; set `DATABASE_URL=${{Postgres.DATABASE_URL}}` on the app service.
 - `Geotab credentials are not configured`: confirm `GEOTAB_DATABASE`, `GEOTAB_USERNAME`, and `GEOTAB_PASSWORD` are set.
 - Login fails in production: set `ADMIN_PASSWORD_HASH`; plain `ADMIN_PASSWORD` is only accepted outside production.
 - No dashboard data: run migrations, confirm the scheduler is enabled, and inspect `sync_logs`.

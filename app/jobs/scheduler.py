@@ -9,7 +9,7 @@ except ModuleNotFoundError:
     BackgroundScheduler = None
     IntervalTrigger = None
 
-from app.config import get_settings, validate_geotab_for_scheduler
+from app.config import get_settings, missing_geotab_credentials
 from app.database.session import SessionLocal
 from app.services.sync_service import SyncService
 
@@ -47,7 +47,13 @@ def start_scheduler() -> BackgroundScheduler | None:
     if not settings.scheduler_enabled:
         logger.info("scheduler_disabled")
         return None
-    validate_geotab_for_scheduler(settings)
+    missing = missing_geotab_credentials(settings)
+    if missing:
+        logger.error(
+            "scheduler_not_started reason=missing_geotab_credentials missing=%s",
+            ",".join(missing),
+        )
+        return None
     if BackgroundScheduler is None:
         logger.warning("scheduler_unavailable apscheduler_not_installed=true")
         return None

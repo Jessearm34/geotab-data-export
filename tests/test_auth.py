@@ -40,7 +40,7 @@ def test_settings_loads_without_geotab_for_migrations(monkeypatch):
     assert Settings().scheduler_enabled is True
 
 
-def test_scheduler_requires_geotab_credentials(monkeypatch):
+def test_scheduler_skips_start_without_geotab_credentials(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("SCHEDULER_ENABLED", "true")
     monkeypatch.delenv("GEOTAB_DATABASE", raising=False)
@@ -50,8 +50,7 @@ def test_scheduler_requires_geotab_credentials(monkeypatch):
 
     from app.jobs.scheduler import start_scheduler
 
-    with pytest.raises(RuntimeError, match="SCHEDULER_ENABLED=true requires Geotab credentials"):
-        start_scheduler()
+    assert start_scheduler() is None
 
 
 def test_admin_password_hash_precedence_over_plain_password(monkeypatch):
@@ -63,6 +62,18 @@ def test_admin_password_hash_precedence_over_plain_password(monkeypatch):
 
     assert verify_admin_password("hashed-password") is True
     assert verify_admin_password("plain-password") is False
+
+
+def test_production_rejects_sqlite_database_url(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("SESSION_SECRET", "production-secret-value")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password("secret"))
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./local.db")
+    _clear_settings_cache()
+
+    with pytest.raises(ValidationError, match="DATABASE_URL must point to PostgreSQL"):
+        Settings()
 
 
 def test_plain_admin_password_ignored_in_production(monkeypatch):

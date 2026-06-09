@@ -54,6 +54,11 @@ class Settings(BaseSettings):
                 raise ValueError("SESSION_SECRET must be set to a strong random value when ENVIRONMENT=production")
             if not self.admin_password_hash:
                 raise ValueError("ADMIN_PASSWORD_HASH is required when ENVIRONMENT=production")
+            if self.database_url.startswith("sqlite:"):
+                raise ValueError(
+                    "DATABASE_URL must point to PostgreSQL when ENVIRONMENT=production; "
+                    "link your Railway Postgres service with ${{Postgres.DATABASE_URL}}"
+                )
 
         return self
 
@@ -66,10 +71,10 @@ class Settings(BaseSettings):
         return all([self.geotab_database, self.geotab_username, self.geotab_password])
 
 
-def validate_geotab_for_scheduler(settings: Settings) -> None:
+def missing_geotab_credentials(settings: Settings) -> list[str]:
     if not settings.scheduler_enabled:
-        return
-    missing = [
+        return []
+    return [
         name
         for name, value in (
             ("GEOTAB_DATABASE", settings.geotab_database),
@@ -78,10 +83,6 @@ def validate_geotab_for_scheduler(settings: Settings) -> None:
         )
         if not value
     ]
-    if missing:
-        raise RuntimeError(
-            f"SCHEDULER_ENABLED=true requires Geotab credentials: {', '.join(missing)}"
-        )
 
 
 @lru_cache
