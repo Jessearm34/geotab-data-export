@@ -105,6 +105,20 @@ for i, r in enumerate(routes):
         routes.insert(0, routes.pop(i))
         break
 app.router.routes = routes
+
+import logging
+logger = logging.getLogger("app.startup")
+_settings = get_settings()
+if _settings.is_geotab_configured and _settings.scheduler_enabled:
+    try:
+        logger.info("startup_sync_all begin")
+        with SessionLocal() as db:
+            from app.services.sync_service import SyncService
+            results = SyncService(db).sync_all()
+        logger.info("startup_sync_all done results=%s", results)
+    except Exception:
+        logger.exception("startup_sync_all failed — scheduler will retry on interval")
+
 _scheduler = start_scheduler()
 
 

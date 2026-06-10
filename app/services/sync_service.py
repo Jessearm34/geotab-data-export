@@ -106,15 +106,23 @@ class SyncService:
         return self._run_logged("vehicles", self._sync_vehicles)
 
     def _sync_vehicles(self) -> int:
-        rows = [vehicle_from_geotab(item).model_dump() for item in self.client.get("Device", results_limit=50000)]
-        return self._upsert_postgres(Vehicle, rows, ["geotab_id"])
+        items = self.client.get("Device", results_limit=50000)
+        logger.info("sync_fetch entity=vehicles raw_count=%s", len(items))
+        rows = [vehicle_from_geotab(item).model_dump() for item in items]
+        written = self._upsert_postgres(Vehicle, rows, ["geotab_id"])
+        logger.info("sync_write entity=vehicles written=%s", written)
+        return written
 
     def sync_drivers(self) -> int:
         return self._run_logged("drivers", self._sync_drivers)
 
     def _sync_drivers(self) -> int:
-        rows = [driver_from_geotab(item).model_dump() for item in self.client.get("User", {"isDriver": True}, results_limit=50000)]
-        return self._upsert_postgres(Driver, rows, ["geotab_id"])
+        items = self.client.get("User", {"isDriver": True}, results_limit=50000)
+        logger.info("sync_fetch entity=drivers raw_count=%s", len(items))
+        rows = [driver_from_geotab(item).model_dump() for item in items]
+        written = self._upsert_postgres(Driver, rows, ["geotab_id"])
+        logger.info("sync_write entity=drivers written=%s", written)
+        return written
 
     def sync_trips(self) -> int:
         return self._run_logged("trips", self._sync_trips)
@@ -122,12 +130,16 @@ class SyncService:
     def _sync_trips(self) -> int:
         since = self.last_sync("trips")
         items = self.client.get("Trip", {"fromDate": iso_geotab(since)}, results_limit=50000)
+        logger.info("sync_fetch entity=trips raw_count=%s since=%s", len(items), since.isoformat())
         vehicle_ids = self._vehicle_map()
         driver_ids = self._driver_map()
+        logger.info("sync_maps vehicle_map_size=%s driver_map_size=%s", len(vehicle_ids), len(driver_ids))
         rows: list[dict[str, Any]] = []
+        skipped_no_vehicle = 0
         for parsed in self._parse_many(items, trip_from_geotab):
             vehicle_id = vehicle_ids.get(parsed.vehicle_geotab_id)
             if not vehicle_id:
+                skipped_no_vehicle += 1
                 continue
             rows.append(
                 {
@@ -141,7 +153,11 @@ class SyncService:
                     "idle_time": parsed.idle_time,
                 }
             )
-        return self._upsert_postgres(Trip, rows, ["geotab_trip_id"])
+        if skipped_no_vehicle:
+            logger.warning("sync_skip entity=trips skipped_no_vehicle=%s", skipped_no_vehicle)
+        written = self._upsert_postgres(Trip, rows, ["geotab_trip_id"])
+        logger.info("sync_write entity=trips written=%s", written)
+        return written
 
     def sync_logs(self) -> int:
         return self._run_logged("gps_logs", self._sync_logs)
@@ -149,7 +165,11 @@ class SyncService:
     def _sync_logs(self) -> int:
         since = self.last_sync("gps_logs")
         items = self.client.get("LogRecord", {"fromDate": iso_geotab(since)}, results_limit=50000)
+        logger.info("sync_fetch entity=gps_logs raw_count=%s since=%s", len(items), since.isoformat())
         vehicle_ids = self._vehicle_map()
+        logger.info("sync_maps vehicle_map_size=%s", len(vehicle_ids))
+        parsed_items = self._parse_many(items, gps_log_from_geotab)
+        skipped_no_vehicle = sum(1 for p in parsed_items if p.vehicle_geotab_id not in vehicle_ids)
         rows = [
             {
                 "geotab_log_id": parsed.geotab_log_id,
@@ -159,10 +179,14 @@ class SyncService:
                 "longitude": parsed.longitude,
                 "speed": parsed.speed,
             }
-            for parsed in self._parse_many(items, gps_log_from_geotab)
+            for parsed in parsed_items
             if parsed.vehicle_geotab_id in vehicle_ids
         ]
-        return self._upsert_postgres(GPSLog, rows, ["geotab_log_id"])
+        if skipped_no_vehicle:
+            logger.warning("sync_skip entity=gps_logs skipped_no_vehicle=%s", skipped_no_vehicle)
+        written = self._upsert_postgres(GPSLog, rows, ["geotab_log_id"])
+        logger.info("sync_write entity=gps_logs written=%s", written)
+        return written
 
     def sync_faults(self) -> int:
         return self._run_logged("faults", self._sync_faults)
@@ -170,7 +194,11 @@ class SyncService:
     def _sync_faults(self) -> int:
         since = self.last_sync("faults")
         items = self.client.get("FaultData", {"fromDate": iso_geotab(since)}, results_limit=50000)
+        logger.info("sync_fetch entity=faults raw_count=%s since=%s", len(items), since.isoformat())
         vehicle_ids = self._vehicle_map()
+        logger.info("sync_maps vehicle_map_size=%s", len(vehicle_ids))
+        parsed_items = self._parse_many(items, fault_from_geotab)
+        skipped_no_vehicle = sum(1 for p in parsed_items if p.vehicle_geotab_id not in vehicle_ids)
         rows = [
             {
                 "geotab_fault_id": parsed.geotab_fault_id,
@@ -179,10 +207,14 @@ class SyncService:
                 "fault_code": parsed.fault_code,
                 "description": parsed.description,
             }
-            for parsed in self._parse_many(items, fault_from_geotab)
+            for parsed in parsed_items
             if parsed.vehicle_geotab_id in vehicle_ids
         ]
-        return self._upsert_postgres(FaultCode, rows, ["geotab_fault_id"])
+        if skipped_no_vehicle:
+            logger.warning("sync_skip entity=faults skipped_no_vehicle=%s", skipped_no_vehicle)
+        written = self._upsert_postgres(FaultCode, rows, ["geotab_fault_id"])
+        logger.info("sync_write entity=faults written=%s", written)
+        return written
 
     @staticmethod
     def _parse_many(items: Iterable[dict[str, Any]], parser: Callable[[dict[str, Any]], T | None]) -> list[T]:

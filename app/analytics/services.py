@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models import Driver, FaultCode, GPSLog, Trip, Vehicle
 from app.schemas.domain import FleetSummary
 
+logger = logging.getLogger(__name__)
+
 
 class AnalyticsService:
     def __init__(self, db: Session) -> None:
@@ -17,6 +20,8 @@ class AnalyticsService:
     def fleet_summary(self, since: datetime | None = None) -> FleetSummary:
         since = since or datetime.now(timezone.utc) - timedelta(days=30)
         total_vehicles = self.db.scalar(select(func.count(Vehicle.id))) or 0
+        trip_count = self.db.scalar(select(func.count(Trip.id)).where(Trip.start_time >= since)) or 0
+        logger.info("dashboard_query fleet_summary total_vehicles=%s trip_count=%s since=%s", total_vehicles, trip_count, since.isoformat())
         active_vehicles = (
             self.db.scalar(select(func.count(func.distinct(Trip.vehicle_id))).where(Trip.start_time >= since)) or 0
         )
@@ -139,7 +144,7 @@ class AnalyticsService:
             .group_by("day")
             .order_by("day")
         ).mappings()
-        return [
+        result = [
             {
                 "day": row["day"].isoformat() if isinstance(row["day"], date) else str(row["day"]),
                 "mileage": round(float(row["miles"]), 2),
@@ -148,6 +153,7 @@ class AnalyticsService:
             }
             for row in rows
         ]
+        logger.info("dashboard_query daily_trends rows=%s", len(result))
 
     def vehicle_detail(self, vehicle_id: int, since: datetime, until: datetime) -> dict[str, Any]:
         trips = self.db.execute(
@@ -211,6 +217,7 @@ class AnalyticsService:
             select(GPSLog.speed).where(GPSLog.timestamp >= since)
         ).mappings()
         speeds = [float(r["speed"]) for r in rows]
+        logger.info("dashboard_query speed_analysis gps_points=%s", len(speeds))
         speeding = [s for s in speeds if s > SPEED_THRESHOLD]
         return {
             "total_gps_points": len(speeds),
