@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from app.schemas.domain import DriverIn, FaultCodeIn, GPSLogIn, TripIn, VehicleIn
+from app.schemas.domain import DriverIn, FaultCodeIn, FuelEventIn, GPSLogIn, TripIn, VehicleIn
 
 logger = logging.getLogger(__name__)
 KM_TO_MILES = 0.621371
@@ -110,4 +110,24 @@ def fault_from_geotab(item: dict[str, Any]) -> FaultCodeIn | None:
         timestamp=parse_dt(item.get("dateTime")),
         fault_code=str(code),
         description=diagnostic.get("name") or item.get("description"),
+    )
+
+
+def fuel_event_from_geotab(item: dict[str, Any]) -> FuelEventIn | None:
+    """Create a FuelEventIn from a Geotab trip item (daily aggregated fuel).
+
+    Fuel events are derived from trip data since Geotab does not expose a
+    dedicated fuel-consumption entity. The item must contain device and fuel
+    data with a start timestamp.
+    """
+    device_id = _id(item.get("device"))
+    if not device_id:
+        return None
+    fuel_liters = float(item.get("fuelUsed", 0) or 0)
+    if fuel_liters <= 0:
+        return None
+    return FuelEventIn(
+        vehicle_geotab_id=device_id,
+        timestamp=parse_dt(item.get("start") or item.get("dateTime")),
+        fuel_used=fuel_liters * LITERS_TO_GALLONS,
     )

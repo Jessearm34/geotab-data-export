@@ -5,14 +5,14 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.geotab.client import GeotabClient, iso_geotab
 from app.geotab.transform import driver_from_geotab, fault_from_geotab, gps_log_from_geotab, trip_from_geotab, vehicle_from_geotab
-from app.models import Driver, FaultCode, GPSLog, SyncLog, SyncMetadata, Trip, Vehicle
+from app.models import Driver, FaultCode, FuelEvent, GPSLog, SyncLog, SyncMetadata, Trip, Vehicle
 from app.schemas.domain import DriverIn, FaultCodeIn, GPSLogIn, TripIn, VehicleIn
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ class SyncService:
             log.status = "success"
             log.records_processed = processed
             log.finished_at = _now()
-            self.set_last_sync(entity_name, log.finished_at)
+            # Note: watermark is set by the caller (sync_all) after all entities
             self.db.commit()
             logger.info("sync_success entity=%s records=%s", entity_name, processed)
             return processed
@@ -234,6 +234,44 @@ class SyncService:
         logger.info("sync_write entity=faults written=%s", written)
         return written
 
+    def sync_fuel_events(self) -> int:
+        return self._run_logged("fuel_events", self._sync_fuel_events)
+
+    def _sync_fuel_events(self) -> int:
+        """Materialize daily fuel events from the Trip table.
+
+        Aggregates trip fuel_used by vehicle per day and upserts into the
+        fuel_events table. Runs after trip sync and only processes trips
+        since the last fuel_events materialization.
+        """
+        since = self.last_sync("fuel_events")
+        rows = self.db.execute(
+            select(
+                Trip.vehicle_id,
+                func.date(Trip.start_time).label("day"),
+                func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
+            )
+            .where(Trip.start_time >= since, Trip.fuel_used > 0)
+            .group_by(Trip.vehicle_id, func.date(Trip.start_time))
+            .order_by(Trip.vehicle_id, func.date(Trip.start_time))
+        ).mappings()
+        fuel_rows = []
+        for row in rows:
+            day_val = row["day"]
+            if isinstance(day_val, str):
+                ts = datetime.fromisoformat(day_val).replace(tzinfo=timezone.utc)
+            else:
+                ts = datetime.combine(day_val, datetime.min.time(), tzinfo=timezone.utc)
+            fuel_rows.append({
+                "vehicle_id": row["vehicle_id"],
+                "timestamp": ts,
+                "fuel_used": round(float(row["fuel"]), 2),
+            })
+        logger.info("sync_fetch entity=fuel_events derived_rows=%s", len(fuel_rows))
+        written = self._upsert_batch(FuelEvent, fuel_rows, ["vehicle_id", "timestamp"])
+        logger.info("sync_write entity=fuel_events written=%s", written)
+        return written
+
     @staticmethod
     def _parse_many(items: Iterable[dict[str, Any]], parser: Callable[[dict[str, Any]], T | None]) -> list[T]:
         parsed: list[T] = []
@@ -247,10 +285,22 @@ class SyncService:
         return parsed
 
     def sync_all(self) -> dict[str, int]:
-        return {
-            "vehicles": self.sync_vehicles(),
-            "drivers": self.sync_drivers(),
-            "trips": self.sync_trips(),
-            "gps_logs": self.sync_logs(),
-            "faults": self.sync_faults(),
-        }
+        results = {}
+        for name, func in [
+            ("vehicles", self._sync_vehicles),
+            ("drivers", self._sync_drivers),
+            ("trips", self._sync_trips),
+            ("gps_logs", self._sync_logs),
+            ("faults", self._sync_faults),
+            ("fuel_events", self._sync_fuel_events),
+        ]:
+            try:
+                results[name] = self._run_logged(name, func)
+            except Exception:
+                logger.exception("sync_all_failed entity=%s", name)
+                results[name] = 0
+        for name, count in results.items():
+            if count > 0:
+                self.set_last_sync(name, _now())
+        self.db.commit()
+        return results

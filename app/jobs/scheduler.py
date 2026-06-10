@@ -16,10 +16,9 @@ from app.services.sync_service import SyncService
 logger = logging.getLogger(__name__)
 
 
-def _job(method_name: str) -> None:
+def _job_all() -> None:
     with SessionLocal() as db:
-        service = SyncService(db)
-        getattr(service, method_name)()
+        SyncService(db).sync_all()
 
 
 def create_scheduler() -> BackgroundScheduler:
@@ -28,17 +27,15 @@ def create_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone="UTC")
     trigger = IntervalTrigger(minutes=settings.sync_interval_minutes)
-    for name in ["sync_vehicles", "sync_drivers", "sync_trips", "sync_logs", "sync_faults"]:
-        scheduler.add_job(
-            _job,
-            trigger=trigger,
-            args=[name],
-            id=name,
-            max_instances=1,
-            coalesce=True,
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
+    scheduler.add_job(
+        _job_all,
+        trigger=trigger,
+        id="sync_all",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
     return scheduler
 
 

@@ -61,6 +61,17 @@ from app.auth.security import (
 )
 from app.config import get_settings
 from app.dashboards.charts import bar_chart, histogram, line_chart, map_chart
+from app.dashboards.components import (
+    chart_container,
+    data_table,
+    date_controls,
+    empty_state,
+    kpi_row,
+    page_header,
+    panel,
+    resolve_date_range,
+)
+from app.dashboards.kpi import Kpi
 from app.database.session import SessionLocal
 from app.jobs.scheduler import start_scheduler
 from app.logging_config import configure_logging
@@ -122,8 +133,20 @@ if _settings.is_geotab_configured and _settings.scheduler_enabled:
 _scheduler = start_scheduler()
 
 
-def page(request: Request, title: str, body: str) -> HTMLResponse:
+def page(request: Request, title: str, body: str, active_nav: str | None = None) -> HTMLResponse:
     token = csrf_token(request)
+    nav_links = [
+        ("/", "Executive"),
+        ("/safety", "Safety &amp; Sustainability"),
+        ("/vehicles", "Vehicles"),
+        ("/drivers", "Drivers"),
+        ("/maintenance", "Maintenance"),
+        ("/fleet-map", "Fleet Map"),
+    ]
+    nav_html = "".join(
+        f'<a href="{path}"{" class=\"active\"" if path == active_nav else ""}>{label}</a>'
+        for path, label in nav_links
+    )
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -138,17 +161,11 @@ def page(request: Request, title: str, body: str) -> HTMLResponse:
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">Fleet Analytics</div>
-      <nav class="nav">
-        <a href="/">Executive</a>
-        <a href="/safety">Safety &amp; Sustainability</a>
-        <a href="/vehicles">Vehicles</a>
-        <a href="/drivers">Drivers</a>
-        <a href="/maintenance">Maintenance</a>
-        <a href="/fleet-map">Fleet Map</a>
+      <nav class="nav">{nav_html}
         <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{token}"><button class="logout" type="submit">Sign out</button></form>
       </nav>
     </aside>
-    <main class="main">{body}</main>
+    <main class="main" id="main-content" hx-boost="true">{body}</main>
   </div>
 </body>
 </html>"""
@@ -172,17 +189,61 @@ def login_page(request: Request, error: str | None = None) -> HTMLResponse:
     )
 
 
-def metric(label: str, value: Any) -> str:
-    return f'<section class="card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></section>'
-
-
 def with_db() -> SessionLocal:
     return SessionLocal()
 
 
+# ── Helpers ──────────────────────────────────────── #
+
+def _safety_kpis(speed: dict, idling: dict, efficiency: list, emissions: dict, faults: dict) -> list[Kpi]:
+    top_mpg = efficiency[0]["mpg"] if efficiency else None
+    return [
+        Kpi(key="avg_speed", label="Avg Speed", value=speed["avg_speed"], unit="mph"),
+        Kpi(key="max_speed", label="Max Speed", value=speed["max_speed"], unit="mph"),
+        Kpi(key="speeding_pct", label="Speeding %", value=speed["speeding_pct"], unit="%"),
+        Kpi(key="idle_hours", label="Idle Time", value=idling["total_idle_hours"], unit="hours"),
+        Kpi(key="fleet_mpg", label="Fleet MPG", value=top_mpg, unit="mpg"),
+        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons"),
+        Kpi(key="fuel_gal", label="Fuel Used", value=emissions["total_fuel_gal"], unit="gal"),
+        Kpi(key="safety_events", label="Fault Events", value=faults["open_fault_counts"]),
+    ]
+
+
+def _exec_kpis(summary: Any, idling: dict, speed: dict, emissions: dict) -> list[Kpi]:
+    return [
+        Kpi(key="total_vehicles", label="Total Vehicles", value=summary.total_vehicles),
+        Kpi(key="active_vehicles", label="Active Vehicles", value=summary.active_vehicles),
+        Kpi(key="fleet_miles", label="Fleet Miles", value=summary.total_fleet_miles, unit="miles"),
+        Kpi(key="avg_mpg", label="Avg MPG", value=summary.average_mpg, unit="mpg"),
+        Kpi(key="idle_pct", label="Idle %", value=idling["idle_pct"], unit="%"),
+        Kpi(key="speeding", label="Speeding Incidents", value=speed["speeding_count"]),
+        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons"),
+        Kpi(key="fuel", label="Fuel Used", value=summary.total_fuel_consumed, unit="gal"),
+    ]
+
+
+# ── Health ───────────────────────────────────────── #
+
+
 @rt("/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    sync_status: dict[str, Any] = {"status": "ok"}
+    try:
+        with SessionLocal() as db:
+            from app.models import SyncMetadata
+            rows = db.query(SyncMetadata).all()
+            sync_status["sync"] = {
+                m.entity_name: m.last_sync_timestamp.isoformat() if m.last_sync_timestamp else None
+                for m in rows
+            }
+            sync_status["db"] = "connected"
+    except Exception as exc:
+        sync_status["db"] = "error"
+        sync_status["error"] = str(exc)
+    return JSONResponse(sync_status)
+
+
+# ── Auth ─────────────────────────────────────────── #
 
 
 @rt("/login")
@@ -214,54 +275,50 @@ async def logout(request: Request) -> RedirectResponse:
     return RedirectResponse("/login", status_code=303)
 
 
+# ── Executive Dashboard ─────────────────────────── #
+
+
 @rt("/")
-def executive(request: Request) -> HTMLResponse:
+def executive(request: Request, range: str | None = None, start: str | None = None, end: str | None = None) -> HTMLResponse:
+    since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
         analytics = AnalyticsService(db)
-        summary = analytics.fleet_summary()
-        trends = analytics.daily_trends() or []
-        utilization = analytics.vehicle_utilization()[:10]
-        idling = analytics.idling_summary()
-        speed = analytics.speed_analysis()
-        emissions = analytics.emissions_estimate()
-        body = f"""
-<div class="topbar"><h1>Executive Dashboard</h1></div>
-<div class="grid cards">
-{metric("Total Vehicles", summary.total_vehicles)}
-{metric("Active Vehicles", summary.active_vehicles)}
-{metric("Fleet Miles", f"{summary.total_fleet_miles:,.0f}")}
-{metric("Avg MPG", f"{summary.average_mpg}" if summary.average_mpg else '—')}
-</div>
-<div class="grid cards">
-{metric("Idle %", f"{idling['idle_pct']}%")}
-{metric("Speeding Incidents", speed['speeding_count'])}
-{metric("CO₂ Emissions", f"{emissions['co2_tons']} tons")}
-{metric("Fuel Used", f"{summary.total_fuel_consumed:,.1f} gal")}
-</div>
-<div class="grid charts" style="margin-top:16px">
-<section class="panel">{line_chart(trends, "day", "mileage", "Fleet Miles Trend")}</section>
-<section class="panel">{line_chart(trends, "day", "fuel", "Fuel Usage Trend")}</section>
-<section class="panel span-2">{bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking")}</section>
-</div>"""
-        return page(request, "Executive Dashboard", body)
+        summary = analytics.fleet_summary(since, until)
+        trends = analytics.daily_trends(since, until) or []
+        utilization = analytics.vehicle_utilization(since, until)[:10]
+        idling = analytics.idling_summary(since, until)
+        speed = analytics.speed_analysis(since, until)
+        emissions = analytics.emissions_estimate(since, until)
+        body = (page_header("Executive Dashboard", refreshed=datetime.now(timezone.utc))
+                + date_controls(rng, hx_target="#main-content")
+                + kpi_row(_exec_kpis(summary, idling, speed, emissions))
+                + '<div class="grid charts">'
+                + chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend"), "Fleet Miles Trend", dot="#38bdf8")
+                + chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend"), "Fuel Usage Trend", dot="#22c55e")
+                + chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b")
+                + "</div>")
+        return page(request, "Executive Dashboard", body, active_nav="/")
+
+
+# ── Vehicles ────────────────────────────────────── #
 
 
 @rt("/vehicles")
 def vehicles(request: Request) -> HTMLResponse:
     with with_db() as db:
-        vehicles = db.query(Vehicle).order_by(Vehicle.license_plate.asc().nullslast()).all()
-        selected = vehicles[0].id if vehicles else 0
-        options = "".join(f'<option value="{v.id}">{v.license_plate or v.vin or v.geotab_id}</option>' for v in vehicles)
-        body = f"""
-<div class="topbar"><h1>Vehicle Dashboard</h1><span class="htmx-indicator">Loading...</span></div>
+        vehicle_list = db.query(Vehicle).order_by(Vehicle.license_plate.asc().nullslast()).all()
+        selected = vehicle_list[0].id if vehicle_list else 0
+        options = "".join(f'<option value="{v.id}">{v.license_plate or v.vin or v.geotab_id}</option>' for v in vehicle_list)
+        body = (page_header("Vehicle Dashboard")
+                + f"""
 <form class="filters" hx-get="/partials/vehicle" hx-target="#vehicle-content" hx-indicator=".htmx-indicator">
 <label>Vehicle<select name="vehicle_id">{options}</select></label>
 <label>From<input name="from_date" type="date" value="{(datetime.now(timezone.utc)-timedelta(days=30)).date()}"></label>
 <label>To<input name="to_date" type="date" value="{datetime.now(timezone.utc).date()}"></label>
 <button type="submit">Apply</button>
 </form>
-<div id="vehicle-content">{vehicle_partial(selected)}</div>"""
-        return page(request, "Vehicle Dashboard", body)
+<div id="vehicle-content">{vehicle_partial(selected)}</div>""")
+        return page(request, "Vehicle Dashboard", body, active_nav="/vehicles")
 
 
 @rt("/partials/vehicle")
@@ -271,121 +328,139 @@ def vehicle_partial_route(vehicle_id: int, from_date: str, to_date: str) -> HTML
 
 def vehicle_partial(vehicle_id: int, from_date: str | None = None, to_date: str | None = None) -> str:
     if not vehicle_id:
-        return '<section class="panel">No vehicles are available yet.</section>'
+        return empty_state("No vehicles are available yet.")
     since = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc) if from_date else datetime.now(timezone.utc) - timedelta(days=30)
     until = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc) + timedelta(days=1) if to_date else datetime.now(timezone.utc)
     with with_db() as db:
         detail = AnalyticsService(db).vehicle_detail(vehicle_id, since, until)
-        trips = "".join(
-            f"<tr><td>{row['start_time'][:10]}</td><td>{row['distance_miles']}</td><td>{row['fuel_used']}</td></tr>"
-            for row in detail["trip_history"][:100]
+        trips = data_table(
+            ["Date", "Miles", "Fuel"],
+            [
+                [row["start_time"][:10], str(row["distance_miles"]), str(row["fuel_used"])]
+                for row in detail["trip_history"][:100]
+            ],
+            num_cols={1, 2},
         )
-        return f"""
-<div class="grid charts">
-<section class="panel">{line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage")}</section>
-<section class="panel">{histogram(detail["speed_distribution"], "Speed Distribution")}</section>
-<section class="panel">{map_chart([{"vehicle": "selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points")}</section>
-<section class="panel"><h2>Trip History</h2><table><thead><tr><th>Date</th><th>Miles</th><th>Fuel</th></tr></thead><tbody>{trips}</tbody></table></section>
-</div>"""
+        return (f'<div class="grid charts">'
+                + chart_container(line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage"), "Daily Mileage", dot="#38bdf8")
+                + chart_container(histogram(detail["speed_distribution"], "Speed Distribution"), "Speed Distribution", dot="#f59e0b")
+                + chart_container(
+                    map_chart([{"vehicle": "selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points"),
+                    "Recent GPS Points", span_2=True, dot="#22c55e")
+                + panel(trips, title="Trip History", span_2=True)
+                + "</div>")
+
+
+# ── Drivers ─────────────────────────────────────── #
 
 
 @rt("/drivers")
-def drivers(request: Request) -> HTMLResponse:
+def drivers(request: Request, range: str | None = None, start: str | None = None, end: str | None = None) -> HTMLResponse:
+    since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
-        metrics = AnalyticsService(db).driver_metrics()
-        rows = "".join(
-            f"<tr><td>{row['name']}</td><td>{row['trip_count']}</td><td>{row['distance_driven']}</td><td>{row['average_trip_length']}</td></tr>"
-            for row in metrics
+        metrics = AnalyticsService(db).driver_metrics(since, until)
+        rows = data_table(
+            ["Driver", "Trips", "Distance", "Avg Trip"],
+            [
+                [row["name"], str(row["trip_count"]), str(row["distance_driven"]), str(row["average_trip_length"])]
+                for row in metrics
+            ],
+            num_cols={1, 2, 3},
         )
-        body = f"""
-<div class="topbar"><h1>Driver Dashboard</h1></div>
-<div class="grid charts">
-<section class="panel">{bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven")}</section>
-<section class="panel">{bar_chart(metrics[:15], "name", "trip_count", "Trips Completed")}</section>
-<section class="panel span-2"><h2>Driver Performance</h2><table><thead><tr><th>Driver</th><th>Trips</th><th>Distance</th><th>Avg Trip</th></tr></thead><tbody>{rows}</tbody></table></section>
-</div>"""
-        return page(request, "Driver Dashboard", body)
+        body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
+                + date_controls(rng, hx_target="#main-content")
+                + '<div class="grid charts">'
+                + chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven"), "Distance Driven", dot="#38bdf8")
+                + chart_container(bar_chart(metrics[:15], "name", "trip_count", "Trips Completed"), "Trips Completed", dot="#22c55e")
+                + panel(rows, title="Driver Performance", span_2=True)
+                + "</div>")
+        return page(request, "Driver Dashboard", body, active_nav="/drivers")
+
+
+# ── Maintenance ─────────────────────────────────── #
 
 
 @rt("/maintenance")
-def maintenance(request: Request) -> HTMLResponse:
+def maintenance(request: Request, range: str | None = None, start: str | None = None, end: str | None = None) -> HTMLResponse:
+    since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
-        metrics = AnalyticsService(db).maintenance_metrics()
-        current = "".join(
-            f"<tr><td>{row['vehicle']}</td><td>{row['timestamp'][:10]}</td><td>{row['fault_code']}</td><td>{row['description'] or ''}</td></tr>"
-            for row in metrics["current_faults"]
+        metrics = AnalyticsService(db).maintenance_metrics(since, until)
+        current = data_table(
+            ["Vehicle", "Date", "Code", "Description"],
+            [
+                [row["vehicle"], row["timestamp"][:10], row["fault_code"], row["description"] or ""]
+                for row in metrics["current_faults"]
+            ],
         )
-        body = f"""
-<div class="topbar"><h1>Maintenance Dashboard</h1></div>
-<div class="grid charts">
-<section class="panel">{bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency")}</section>
-<section class="panel">{bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Types")}</section>
-<section class="panel span-2"><h2>Current Faults</h2><table><thead><tr><th>Vehicle</th><th>Date</th><th>Code</th><th>Description</th></tr></thead><tbody>{current}</tbody></table></section>
-</div>"""
-        return page(request, "Maintenance Dashboard", body)
+        body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
+                + date_controls(rng, hx_target="#main-content")
+                + '<div class="grid charts">'
+                + chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency"), "Fault Frequency", dot="#ef4444")
+                + chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Types"), "Fault Types", dot="#f59e0b")
+                + panel(current, title="Current Faults", span_2=True)
+                + "</div>")
+        return page(request, "Maintenance Dashboard", body, active_nav="/maintenance")
+
+
+# ── Fleet Map ───────────────────────────────────── #
 
 
 @rt("/fleet-map")
 def fleet_map(request: Request) -> HTMLResponse:
     with with_db() as db:
         locations = AnalyticsService(db).latest_locations()
-        body = f'<div class="topbar"><h1>Fleet Map</h1></div><section class="panel">{map_chart(locations, "Latest Vehicle Locations")}</section>'
-        return page(request, "Fleet Map", body)
+        body = (page_header("Fleet Map")
+                + panel(map_chart(locations, "Latest Vehicle Locations"), title="Latest Vehicle Locations", dot="#38bdf8"))
+        return page(request, "Fleet Map", body, active_nav="/fleet-map")
+
+
+# ── Safety & Sustainability ─────────────────────── #
 
 
 @rt("/safety")
-def safety(request: Request) -> HTMLResponse:
+def safety(request: Request, range: str | None = None, start: str | None = None, end: str | None = None) -> HTMLResponse:
+    since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
         analytics = AnalyticsService(db)
-        speed = analytics.speed_analysis()
-        efficiency = analytics.fuel_efficiency()[:10]
-        idling = analytics.idling_summary()
-        emissions = analytics.emissions_estimate()
-        driver_safety = analytics.driver_safety_rankings()[:10]
-        faults = analytics.maintenance_metrics()
+        speed = analytics.speed_analysis(since, until)
+        efficiency = analytics.fuel_efficiency(since, until)[:10]
+        idling = analytics.idling_summary(since, until)
+        emissions = analytics.emissions_estimate(since, until)
+        driver_safety = analytics.driver_safety_rankings(since, until)[:10]
+        faults = analytics.maintenance_metrics(since, until)
 
-        speed_hist = histogram(speed["speed_distribution"], "Speed Distribution (30d)")
-        mpg_chart = bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)")
-        idle_chart = bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle")
-        driver_rows = "".join(
-            f"<tr><td>{d['name']}</td><td>{d['trip_count']}</td><td>{d['distance_driven']}</td>"
-            f"<td>{d['idle_pct']}%</td><td>{d['score']}</td></tr>"
-            for d in driver_safety
+        kpis = _safety_kpis(speed, idling, efficiency, emissions, faults)
+        speed_hist = chart_container(histogram(speed["speed_distribution"], "Speed Distribution (30d)"), "Speed Distribution", dot="#38bdf8")
+        mpg_chart = chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e")
+        idle_chart = chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b")
+        driver_rows = data_table(
+            ["Driver", "Trips", "Miles", "Idle %", "Score"],
+            [
+                [d["name"], str(d["trip_count"]), str(d["distance_driven"]), f'{d["idle_pct"]}%', str(d["score"])]
+                for d in driver_safety
+            ],
+            num_cols={1, 2, 3, 4},
         )
-        fault_rows = "".join(
-            f"<tr><td>{f['fault_code']}</td><td>{f['description'] or ''}</td><td>{f['count']}</td></tr>"
-            for f in faults["fault_frequency"][:10]
+        fault_rows = data_table(
+            ["Code", "Description", "Count"],
+            [
+                [f["fault_code"], f["description"] or "", str(f["count"])]
+                for f in faults["fault_frequency"][:10]
+            ],
+            num_cols={2},
         )
-        body = f"""
-<div class="topbar"><h1>Safety &amp; Sustainability</h1></div>
-<div class="grid cards">
-{metric("Avg Speed", f"{speed['avg_speed']} mph")}
-{metric("Max Speed", f"{speed['max_speed']} mph")}
-{metric("Speeding %", f"{speed['speeding_pct']}%")}
-{metric("Idle Time", f"{idling['total_idle_hours']} hrs")}
-</div>
-<div class="grid cards">
-{metric("Fleet MPG", f"{efficiency[0]['mpg']}" if efficiency else '—')}
-{metric("CO₂ Emissions", f"{emissions['co2_tons']} tons")}
-{metric("Fuel Consumption", f"{emissions['total_fuel_gal']} gal")}
-{metric("Safety Events", faults['open_fault_counts'])}
-</div>
-<div class="grid charts" style="margin-top:16px">
-<section class="panel">{speed_hist}</section>
-<section class="panel">{mpg_chart}</section>
-<section class="panel">{idle_chart}</section>
-<section class="panel">
-  <h2>Driver Safety Rankings</h2>
-  <table><thead><tr><th>Driver</th><th>Trips</th><th>Miles</th><th>Idle %</th><th>Score</th></tr></thead>
-  <tbody>{driver_rows}</tbody></table>
-</section>
-<section class="panel span-2">
-  <h2>Safety Exceptions (Top Fault Codes)</h2>
-  <table><thead><tr><th>Code</th><th>Description</th><th>Count</th></tr></thead>
-  <tbody>{fault_rows}</tbody></table>
-</section>
-</div>"""
-        return page(request, "Safety & Sustainability", body)
+        body = (page_header("Safety & Sustainability", refreshed=datetime.now(timezone.utc))
+                + date_controls(rng, hx_target="#main-content")
+                + kpi_row(kpis)
+                + '<div class="grid charts">'
+                + speed_hist + mpg_chart + idle_chart
+                + panel(driver_rows, title="Driver Safety Rankings")
+                + panel(fault_rows, title="Safety Exceptions (Top Fault Codes)", span_2=True)
+                + "</div>")
+        return page(request, "Safety & Sustainability", body, active_nav="/safety")
+
+
+# ── API Endpoints ───────────────────────────────── #
 
 
 @rt("/api/fleet-summary")

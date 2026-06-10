@@ -67,12 +67,13 @@ def test_sync_all_populates_every_table(db):
     assert counts["trips"] == 1
     assert counts["gps_logs"] == 1
     assert counts["faults"] == 1
+    assert counts["fuel_events"] > 0
 
     assert db.query(Vehicle).count() == 2
     assert db.query(Trip).count() == 1
     assert db.query(GPSLog).count() == 1
     assert db.query(FaultCode).count() == 1
-    assert db.query(SyncMetadata).count() == 5
+    assert db.query(SyncMetadata).count() == 6
 
 
 def test_sync_drivers_filters_drivers(db):
@@ -162,7 +163,7 @@ def test_incremental_sync_deduplicates(db):
     assert db.query(FaultCode).count() == 1
 
     last_sync = {m.entity_name: m.last_sync_timestamp for m in db.query(SyncMetadata).all()}
-    for name in ("vehicles", "drivers", "trips", "gps_logs", "faults"):
+    for name in ("vehicles", "drivers", "trips", "gps_logs", "faults", "fuel_events"):
         assert last_sync.get(name) is not None, f"{name} should have a sync timestamp"
 
 
