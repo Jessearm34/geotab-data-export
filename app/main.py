@@ -76,7 +76,7 @@ app.add_middleware(
     https_only=settings.is_production,
 )
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 _scheduler = start_scheduler()
 
 
