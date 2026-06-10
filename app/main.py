@@ -39,6 +39,7 @@ except ModuleNotFoundError:
 
         return fallback_app, route
 from starlette.middleware.sessions import SessionMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
@@ -74,6 +75,7 @@ app.add_middleware(
     https_only=settings.is_production,
 )
 app.add_middleware(AuthMiddleware)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 _scheduler = start_scheduler()
 

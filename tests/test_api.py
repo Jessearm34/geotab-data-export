@@ -89,3 +89,52 @@ def test_login_rejects_invalid_csrf(monkeypatch):
     )
     assert response.status_code == 200
     assert "Session validation failed." in response.text
+
+
+def test_proxy_headers_middleware_registered():
+    """ProxyHeadersMiddleware is in the stack so Railway's X-Forwarded-Proto is trusted."""
+    from app.main import app
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    assert any(
+        m.cls is ProxyHeadersMiddleware for m in app.user_middleware
+    ), "ProxyHeadersMiddleware must be registered"
+
+
+def test_production_session_via_proxy_headers():
+    """SessionMiddleware with https_only=True and ProxyHeadersMiddleware:
+    X-Forwarded-Proto: https → Secure cookie accepted → session survives redirect."""
+    from starlette.applications import Starlette
+    from starlette.middleware.sessions import SessionMiddleware
+    from starlette.responses import JSONResponse
+    from starlette.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = Starlette()
+
+    async def set_session(request):
+        request.session["authenticated"] = True
+        return JSONResponse({"ok": True})
+
+    async def check_session(request):
+        return JSONResponse({"auth": request.session.get("authenticated", False)})
+
+    app.add_route("/set", set_session, methods=["POST"])
+    app.add_route("/check", check_session)
+
+    app.add_middleware(
+        SessionMiddleware, secret_key="test-secret", https_only=True, same_site="lax"
+    )
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+    # Use HTTPS base URL so httpx's cookie jar accepts Secure cookies
+    client = TestClient(app, base_url="https://testserver")
+
+    # Session write (simulates Railway with X-Forwarded-Proto)
+    set_resp = client.post("/set", headers={"X-Forwarded-Proto": "https"}, follow_redirects=False)
+    assert set_resp.status_code == 200
+    assert "session=" in set_resp.headers.get("set-cookie", ""), "Session cookie must be set"
+
+    # Session read — Secure cookie should be sent back over HTTPS
+    check_resp = client.get("/check", headers={"X-Forwarded-Proto": "https"})
+    assert check_resp.json()["auth"] is True
