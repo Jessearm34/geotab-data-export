@@ -15,6 +15,15 @@ def test_health_is_public():
     assert response.json()["status"] == "ok"
 
 
+def test_static_served():
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.get("/static/styles.css")
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("text/css")
+
+
 def test_api_requires_auth():
     from app.main import app
 
