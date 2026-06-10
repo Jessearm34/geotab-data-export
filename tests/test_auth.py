@@ -5,7 +5,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.auth.security import hash_password, verify_admin_password
+from app.auth.security import (
+    csrf_token,
+    establish_authenticated_session,
+    hash_password,
+    is_authenticated,
+    validate_csrf,
+    verify_admin_password,
+)
 from app.config import Settings, get_settings
 from app.geotab.client import GeotabAPIError, GeotabClient
 
@@ -115,6 +122,97 @@ def test_geotab_client_reauthenticates_on_session_error(monkeypatch):
     assert rows == [{"id": "device-1"}]
     assert post.call_count == 3
     assert client._credentials == auth_result["credentials"]
+
+
+# --------------------------------------------------------------------------- #
+# Auth security unit tests — is_authenticated, csrf_token, validate_csrf, etc.
+# --------------------------------------------------------------------------- #
+
+
+def _make_request(scope: dict | None = None) -> MagicMock:
+    """Create a mock request with a controlled scope dict."""
+    req = MagicMock()
+    req.scope = scope or {}
+    return req
+
+
+def test_is_authenticated_with_no_session():
+    """is_authenticated returns False when scope has no 'session' key."""
+    req = _make_request({})
+    assert is_authenticated(req) is False
+
+
+def test_is_authenticated_with_none_session():
+    """is_authenticated returns False when scope['session'] is None."""
+    req = _make_request({"session": None})
+    assert is_authenticated(req) is False
+
+
+def test_is_authenticated_with_empty_session():
+    """is_authenticated returns False when session dict is empty."""
+    req = _make_request({"session": {}})
+    assert is_authenticated(req) is False
+
+
+def test_is_authenticated_without_authenticated_key():
+    """is_authenticated returns False when session lacks 'authenticated' key."""
+    req = _make_request({"session": {"csrf_token": "abc"}})
+    assert is_authenticated(req) is False
+
+
+def test_is_authenticated_with_authenticated_true():
+    """is_authenticated returns True when session['authenticated'] is True."""
+    req = _make_request({"session": {"authenticated": True}})
+    assert is_authenticated(req) is True
+
+
+def test_is_authenticated_with_authenticated_false():
+    """is_authenticated returns False when session['authenticated'] is False."""
+    req = _make_request({"session": {"authenticated": False}})
+    assert is_authenticated(req) is False
+
+
+def test_csrf_token_generates_and_persists():
+    """csrf_token generates a token, stores in session, returns same on next call."""
+    session: dict = {}
+    req = _make_request({"session": session})
+    token1 = csrf_token(req)
+    assert len(token1) > 20, "CSRF token should be a non-trivial string"
+    assert session.get("csrf_token") == token1
+
+    token2 = csrf_token(req)
+    assert token2 == token1, "Subsequent calls should return the same token"
+
+
+def test_csrf_token_with_no_session():
+    """csrf_token returns empty string when no session dict is available."""
+    req = _make_request({"session": None})
+    assert csrf_token(req) == ""
+
+
+def test_validate_csrf_get_method(monkeypatch):
+    """validate_csrf returns True for GET/HEAD/OPTIONS without checking tokens."""
+    req = _make_request({"session": {"csrf_token": "abc"}})
+    req.method = "GET"
+    import asyncio
+    assert asyncio.run(validate_csrf(req)) is True
+
+
+def test_establish_authenticated_session_clears_and_sets():
+    """establish_authenticated_session clears existing session and sets authenticated."""
+    session = {"csrf_token": "old", "other_data": "stuff"}
+    req = _make_request({"session": session})
+    establish_authenticated_session(req)
+    assert session.get("authenticated") is True
+    assert session.get("csrf_token") is not None
+    assert session.get("other_data") is None or "other_data" not in session
+
+
+def test_establish_authenticated_session_no_session():
+    """establish_authenticated_session does not crash when scope has no session."""
+    req = _make_request({"session": None})
+    establish_authenticated_session(req)
+    assert True
 
 
 def test_geotab_authenticate_logs_sanitized_failure(monkeypatch):
