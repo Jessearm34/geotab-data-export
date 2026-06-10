@@ -16,8 +16,10 @@ from app.config import get_settings
 
 try:
     from passlib.context import CryptContext
+    import passlib.exc as passlib_exc
 except ModuleNotFoundError:
     CryptContext = None
+    passlib_exc = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,14 @@ def hash_password(password: str) -> str:
 
 def _verify_hash(password: str, stored: str) -> bool:
     if pwd_context:
-        return pwd_context.verify(password, stored)
+        try:
+            return pwd_context.verify(password, stored)
+        except passlib_exc.UnknownHashError:
+            logger.warning("admin_password_hash format not recognised by passlib")
+            return False
+        except Exception:
+            logger.warning("admin_password_hash verification failed", exc_info=True)
+            return False
     if not stored.startswith("pbkdf2_sha256$"):
         return False
     _, salt, digest = stored.split("$", 2)

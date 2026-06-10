@@ -71,6 +71,52 @@ def test_admin_password_hash_precedence_over_plain_password(monkeypatch):
     assert verify_admin_password("plain-password") is False
 
 
+def test_unrecognized_hash_format_returns_false(monkeypatch):
+    """A non-bcrypt ADMIN_PASSWORD_HASH must not crash — return False instead."""
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "a1b2c3d4e5f6")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    _clear_settings_cache()
+
+    assert verify_admin_password("anything") is False
+
+
+def test_malformed_hash_does_not_crash(monkeypatch):
+    """Garbage in ADMIN_PASSWORD_HASH must never propagate a 500."""
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "not-a-valid-hash-format")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    _clear_settings_cache()
+
+    assert verify_admin_password("anything") is False
+
+
+def test_login_with_unrecognized_hash_returns_failure_not_500(monkeypatch):
+    """Integration-style: POST /login with unrecognized hash must not crash."""
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "not-a-valid-hash")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    _clear_settings_cache()
+
+    from app.main import app
+    from starlette.testclient import TestClient
+
+    client = TestClient(app)
+    login_page = client.get("/login")
+    token = login_page.text.split('name="csrf_token" value="')[1].split('"')[0]
+    resp = client.post(
+        "/login",
+        data={"username": "admin", "password": "anything", "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert "Invalid username or password." in resp.text
+
+
 def test_production_rejects_sqlite_database_url(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
