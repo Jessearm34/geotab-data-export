@@ -7,10 +7,12 @@ from typing import Any
 
 try:
     from fasthtml.common import fast_app
+    _fasthtml_available = True
 except ModuleNotFoundError:
     from starlette.applications import Starlette
+    _fasthtml_available = False
 
-    def fast_app() -> tuple[Starlette, Any]:
+    def fast_app(**kwargs: Any) -> tuple[Starlette, Any]:
         fallback_app = Starlette()
 
         def route(path: str, methods: list[str] | None = None):
@@ -38,6 +40,7 @@ except ModuleNotFoundError:
             return decorator
 
         return fallback_app, route
+
 from starlette.middleware.sessions import SessionMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from starlette.requests import Request
@@ -66,7 +69,24 @@ from app.models import Driver, FaultCode, Trip, Vehicle
 configure_logging()
 settings = get_settings()
 
-app, rt = fast_app()
+if _fasthtml_available:
+    app, rt = fast_app(
+        secret_key=settings.session_secret.get_secret_value(),
+        max_age=settings.session_max_age_seconds,
+        same_site="lax",
+        sess_https_only=settings.is_production,
+    )
+    # FastHTML adds SessionMiddleware internally, but we need strict ASGI
+    # ordering: Session must populate scope["session"] BEFORE AuthMiddleware
+    # checks it. Remove the internal session middleware so we can re-add all
+    # middleware below in the correct order.
+    app.user_middleware = [m for m in app.user_middleware if m.cls is not SessionMiddleware]
+else:
+    app, rt = fast_app()
+
+# Ordering: add_middleware prepends. Session is added second (middle of list),
+# so in the ASGI chain it runs BEFORE Auth (which is innermost, closer to the
+# handler). This ensures scope["session"] is populated when AuthMiddleware checks it.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(
     SessionMiddleware,
@@ -77,6 +97,14 @@ app.add_middleware(
 )
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# Move the static mount before any route-based static handler so it takes
+# priority over fasthtml's built-in /{fname:path}.{ext:static} route.
+routes = list(app.routes)
+for i, r in enumerate(routes):
+    if hasattr(r, 'name') and r.name == 'static':
+        routes.insert(0, routes.pop(i))
+        break
+app.router.routes = routes
 _scheduler = start_scheduler()
 
 
@@ -143,27 +171,24 @@ def health() -> JSONResponse:
 
 
 @rt("/login")
-async def login_get(request: Request) -> HTMLResponse | RedirectResponse:
+async def login(request: Request) -> HTMLResponse | RedirectResponse:
     if is_authenticated(request):
         return RedirectResponse("/", status_code=303)
-    return login_page(request)
-
-
-@rt("/login", methods=["POST"])
-async def login_post(request: Request) -> HTMLResponse | RedirectResponse:
-    form = await request.form()
-    if not await validate_csrf(request, form):
-        return login_page(request, "Session validation failed.")
-    username = str(form.get("username", ""))
-    password = str(form.get("password", ""))
-    if not login_allowed(request, username):
+    if request.method == "POST":
+        form = await request.form()
+        if not await validate_csrf(request, form):
+            return login_page(request, "Session validation failed.")
+        username = str(form.get("username", ""))
+        password = str(form.get("password", ""))
+        if not login_allowed(request, username):
+            return login_page(request, "Invalid username or password.")
+        if secrets.compare_digest(username, settings.admin_username) and verify_admin_password(password):
+            record_login_success(request, username)
+            establish_authenticated_session(request)
+            return RedirectResponse("/", status_code=303)
+        record_login_failure(request, username)
         return login_page(request, "Invalid username or password.")
-    if secrets.compare_digest(username, settings.admin_username) and verify_admin_password(password):
-        record_login_success(request, username)
-        establish_authenticated_session(request)
-        return RedirectResponse("/", status_code=303)
-    record_login_failure(request, username)
-    return login_page(request, "Invalid username or password.")
+    return login_page(request)
 
 
 @rt("/logout", methods=["POST"])
