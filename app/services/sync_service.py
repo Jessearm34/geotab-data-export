@@ -113,7 +113,12 @@ class SyncService:
         return self._run_logged("drivers", self._sync_drivers)
 
     def _sync_drivers(self) -> int:
-        rows = [driver_from_geotab(item).model_dump() for item in self.client.get("User", {"isDriver": True}, results_limit=50000)]
+        items = self.client.get("User", results_limit=50000)
+        rows = [
+            driver_from_geotab(item).model_dump()
+            for item in items
+            if item.get("isDriver")
+        ]
         return self._upsert_postgres(Driver, rows, ["geotab_id"])
 
     def sync_trips(self) -> int:
