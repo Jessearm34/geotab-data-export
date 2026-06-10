@@ -1,6 +1,7 @@
 import base64
 import json
 
+import pytest
 from itsdangerous import TimestampSigner
 from starlette.testclient import TestClient
 
@@ -38,6 +39,20 @@ def _session_csrf(client: TestClient, secret: str, max_age: int) -> str:
     return str(session["csrf_token"])
 
 
+def _login(client: TestClient, username: str = "admin", password: str = "admin") -> str | None:
+    """Helper: GET /login, submit credentials, return CSRF or None."""
+    login_page = client.get("/login")
+    if 'name="csrf_token" value="' not in login_page.text:
+        return None
+    token = login_page.text.split('name="csrf_token" value="')[1].split('"')[0]
+    resp = client.post(
+        "/login",
+        data={"username": username, "password": password, "csrf_token": token},
+        follow_redirects=False,
+    )
+    return resp.headers.get("location")
+
+
 def test_login_success_and_logout(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
@@ -46,18 +61,10 @@ def test_login_success_and_logout(monkeypatch):
     monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
 
     app, settings = _reload_app_settings(monkeypatch)
-
     client = TestClient(app)
-    login_page = client.get("/login")
-    token = login_page.text.split('name="csrf_token" value="')[1].split('"')[0]
 
-    response = client.post(
-        "/login",
-        data={"username": "admin", "password": "admin", "csrf_token": token},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
-    assert response.headers["location"] == "/"
+    location = _login(client)
+    assert location == "/"
 
     authenticated = client.get("/login", follow_redirects=False)
     assert authenticated.status_code == 303
@@ -89,6 +96,104 @@ def test_login_rejects_invalid_csrf(monkeypatch):
     )
     assert response.status_code == 200
     assert "Session validation failed." in response.text
+
+
+def test_login_rejects_wrong_password(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+
+    app, _settings = _reload_app_settings(monkeypatch)
+    client = TestClient(app)
+
+    location = _login(client, password="wrongpass")
+    assert location is None or location == "/login"
+
+
+def test_login_rejects_wrong_username(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+
+    app, _settings = _reload_app_settings(monkeypatch)
+    client = TestClient(app)
+
+    location = _login(client, username="hacker")
+    assert location is None or location == "/login"
+
+
+def test_session_persists_across_multiple_requests(monkeypatch):
+    """After login, multiple protected-route requests remain authenticated."""
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+
+    app, _settings = _reload_app_settings(monkeypatch)
+    client = TestClient(app)
+
+    assert _login(client) == "/"
+
+    for _ in range(5):
+        resp = client.get("/login", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/"
+
+
+def test_all_protected_routes_redirect_when_unauthenticated(monkeypatch):
+    """Every non-public route returns 303 when no session exists."""
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+
+    app, _settings = _reload_app_settings(monkeypatch)
+    client = TestClient(app)
+
+    protected = [
+        "/",
+        "/vehicles",
+        "/drivers",
+        "/maintenance",
+        "/fleet-map",
+        "/api/fleet-summary",
+        "/api/vehicles",
+        "/api/drivers",
+        "/api/trips",
+        "/api/faults",
+    ]
+    for path in protected:
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 303, f"{path} should return 303, got {resp.status_code}"
+
+
+def test_middleware_stack_order_correct():
+    """Verify middleware order: Auth (innermost) → Session → ProxyHeaders (outermost).
+
+    Starlette's add_middleware prepends (inserts at 0), so user_middleware is
+    stored in reverse order of addition:
+      user_middleware[0] = last added = outermost = ProxyHeaders
+      user_middleware[-1] = first added = innermost = AuthMiddleware
+    """
+    from app.main import app
+    from app.auth.security import AuthMiddleware
+    from starlette.middleware.sessions import SessionMiddleware
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    classes = [m.cls for m in app.user_middleware]
+
+    # First added = innermost (AuthMiddleware)
+    assert classes[-1] is AuthMiddleware, f"Expected AuthMiddleware innermost, got {classes[-1]}"
+    # Second added = middle (SessionMiddleware)
+    assert classes[1] is SessionMiddleware, f"Expected SessionMiddleware middle, got {classes[1]}"
+    # Third added = outermost (ProxyHeadersMiddleware)
+    assert classes[0] is ProxyHeadersMiddleware, f"Expected ProxyHeaders outermost, got {classes[0]}"
+
+    # Runtime stack (outermost → innermost → handler):
+    #   ProxyHeaders → SessionMiddleware → AuthMiddleware
 
 
 def test_proxy_headers_middleware_registered():
