@@ -126,6 +126,7 @@ def page(request: Request, title: str, body: str) -> HTMLResponse:
       <div class="brand">Fleet Analytics</div>
       <nav class="nav">
         <a href="/">Executive</a>
+        <a href="/safety">Safety &amp; Sustainability</a>
         <a href="/vehicles">Vehicles</a>
         <a href="/drivers">Drivers</a>
         <a href="/maintenance">Maintenance</a>
@@ -206,13 +207,22 @@ def executive(request: Request) -> HTMLResponse:
         summary = analytics.fleet_summary()
         trends = analytics.daily_trends()
         utilization = analytics.vehicle_utilization()[:10]
+        idling = analytics.idling_summary()
+        speed = analytics.speed_analysis()
+        emissions = analytics.emissions_estimate()
         body = f"""
-<div class="topbar"><h1>Executive Dashboard</h1><span class="htmx-indicator">Loading...</span></div>
+<div class="topbar"><h1>Executive Dashboard</h1></div>
 <div class="grid cards">
 {metric("Total Vehicles", summary.total_vehicles)}
 {metric("Active Vehicles", summary.active_vehicles)}
-{metric("Total Fleet Miles", f"{summary.total_fleet_miles:,.0f}")}
-{metric("Fuel Usage", f"{summary.total_fuel_consumed:,.1f} gal")}
+{metric("Fleet Miles", f"{summary.total_fleet_miles:,.0f}")}
+{metric("Avg MPG", f"{summary.average_mpg}" if summary.average_mpg else '—')}
+</div>
+<div class="grid cards">
+{metric("Idle %", f"{idling['idle_pct']}%")}
+{metric("Speeding Incidents", speed['speeding_count'])}
+{metric("CO₂ Emissions", f"{emissions['co2_tons']} tons")}
+{metric("Fuel Used", f"{summary.total_fuel_consumed:,.1f} gal")}
 </div>
 <div class="grid charts" style="margin-top:16px">
 <section class="panel">{line_chart(trends, "day", "mileage", "Fleet Miles Trend")}</section>
@@ -307,6 +317,61 @@ def fleet_map(request: Request) -> HTMLResponse:
         locations = AnalyticsService(db).latest_locations()
         body = f'<div class="topbar"><h1>Fleet Map</h1></div><section class="panel">{map_chart(locations, "Latest Vehicle Locations")}</section>'
         return page(request, "Fleet Map", body)
+
+
+@rt("/safety")
+def safety(request: Request) -> HTMLResponse:
+    with with_db() as db:
+        analytics = AnalyticsService(db)
+        speed = analytics.speed_analysis()
+        efficiency = analytics.fuel_efficiency()[:10]
+        idling = analytics.idling_summary()
+        emissions = analytics.emissions_estimate()
+        driver_safety = analytics.driver_safety_rankings()[:10]
+        faults = analytics.maintenance_metrics()
+
+        speed_hist = histogram(speed["speed_distribution"], "Speed Distribution (30d)")
+        mpg_chart = bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)")
+        idle_chart = bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle")
+        driver_rows = "".join(
+            f"<tr><td>{d['name']}</td><td>{d['trip_count']}</td><td>{d['distance_driven']}</td>"
+            f"<td>{d['idle_pct']}%</td><td>{d['score']}</td></tr>"
+            for d in driver_safety
+        )
+        fault_rows = "".join(
+            f"<tr><td>{f['fault_code']}</td><td>{f['description'] or ''}</td><td>{f['count']}</td></tr>"
+            for f in faults["fault_frequency"][:10]
+        )
+        body = f"""
+<div class="topbar"><h1>Safety &amp; Sustainability</h1></div>
+<div class="grid cards">
+{metric("Avg Speed", f"{speed['avg_speed']} mph")}
+{metric("Max Speed", f"{speed['max_speed']} mph")}
+{metric("Speeding %", f"{speed['speeding_pct']}%")}
+{metric("Idle Time", f"{idling['total_idle_hours']} hrs")}
+</div>
+<div class="grid cards">
+{metric("Fleet MPG", f"{efficiency[0]['mpg']}" if efficiency else '—')}
+{metric("CO₂ Emissions", f"{emissions['co2_tons']} tons")}
+{metric("Fuel Consumption", f"{emissions['total_fuel_gal']} gal")}
+{metric("Safety Events", faults['open_fault_counts'])}
+</div>
+<div class="grid charts" style="margin-top:16px">
+<section class="panel">{speed_hist}</section>
+<section class="panel">{mpg_chart}</section>
+<section class="panel">{idle_chart}</section>
+<section class="panel">
+  <h2>Driver Safety Rankings</h2>
+  <table><thead><tr><th>Driver</th><th>Trips</th><th>Miles</th><th>Idle %</th><th>Score</th></tr></thead>
+  <tbody>{driver_rows}</tbody></table>
+</section>
+<section class="panel span-2">
+  <h2>Safety Exceptions (Top Fault Codes)</h2>
+  <table><thead><tr><th>Code</th><th>Description</th><th>Count</th></tr></thead>
+  <tbody>{fault_rows}</tbody></table>
+</section>
+</div>"""
+        return page(request, "Safety & Sustainability", body)
 
 
 @rt("/api/fleet-summary")

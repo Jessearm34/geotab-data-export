@@ -200,3 +200,139 @@ class AnalyticsService:
             }
             for log, vehicle in rows
         ]
+
+    # ── Executive Safety & Sustainability Metrics ─────────────────────── #
+
+    def speed_analysis(self, since: datetime | None = None) -> dict[str, Any]:
+        """Speeding analysis: GPS points above threshold, speed distribution."""
+        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        SPEED_THRESHOLD = 70
+        rows = self.db.execute(
+            select(GPSLog.speed).where(GPSLog.timestamp >= since)
+        ).mappings()
+        speeds = [float(r["speed"]) for r in rows]
+        speeding = [s for s in speeds if s > SPEED_THRESHOLD]
+        return {
+            "total_gps_points": len(speeds),
+            "speeding_count": len(speeding),
+            "speeding_pct": round((len(speeding) / len(speeds)) * 100, 2) if speeds else 0.0,
+            "speed_distribution": speeds[:1000],
+            "avg_speed": round(sum(speeds) / len(speeds), 1) if speeds else 0.0,
+            "max_speed": round(max(speeds), 1) if speeds else 0.0,
+        }
+
+    def fuel_efficiency(self, since: datetime | None = None) -> list[dict[str, Any]]:
+        """Per-vehicle MPG ranking (only vehicles with fuel data)."""
+        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        rows = self.db.execute(
+            select(
+                Vehicle.id,
+                Vehicle.license_plate,
+                func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"),
+                func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
+            )
+            .join(Trip, Trip.vehicle_id == Vehicle.id)
+            .where(Trip.start_time >= since, Trip.fuel_used > 0)
+            .group_by(Vehicle.id)
+            .having(func.coalesce(func.sum(Trip.fuel_used), 0.0) > 0)
+            .order_by(desc("miles"))
+        ).mappings()
+        result = []
+        for r in rows:
+            fuel = float(r["fuel"])
+            mpg = round(float(r["miles"]) / fuel, 2) if fuel else 0.0
+            result.append({
+                "vehicle_id": r["id"],
+                "label": r["license_plate"] or f"Vehicle {r['id']}",
+                "total_miles": round(float(r["miles"]), 2),
+                "fuel_used": round(fuel, 2),
+                "mpg": mpg,
+            })
+        return sorted(result, key=lambda x: x["mpg"], reverse=True)
+
+    def idling_summary(self, since: datetime | None = None) -> dict[str, Any]:
+        """Per-vehicle idling breakdown."""
+        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        rows = self.db.execute(
+            select(
+                Vehicle.id,
+                Vehicle.license_plate,
+                func.coalesce(func.sum(Trip.idle_time), 0.0).label("idle"),
+                func.coalesce(func.sum(
+                    func.extract("epoch", Trip.end_time) - func.extract("epoch", Trip.start_time)
+                ), 0.0).label("total_time"),
+            )
+            .join(Trip, Trip.vehicle_id == Vehicle.id)
+            .where(Trip.start_time >= since)
+            .group_by(Vehicle.id)
+            .order_by(desc("idle"))
+        ).mappings()
+        vehicles = []
+        total_idle = 0.0
+        total_time = 0.0
+        for r in rows:
+            idle = float(r["idle"])
+            tot = float(r["total_time"])
+            total_idle += idle
+            total_time += tot
+            vehicles.append({
+                "vehicle_id": r["id"],
+                "label": r["license_plate"] or f"Vehicle {r['id']}",
+                "idle_seconds": round(idle, 1),
+                "idle_pct": round((idle / tot) * 100, 2) if tot else 0.0,
+            })
+        return {
+            "vehicles": vehicles,
+            "total_idle_hours": round(total_idle / 3600, 2),
+            "idle_pct": round((total_idle / total_time) * 100, 2) if total_time else 0.0,
+        }
+
+    def driver_safety_rankings(self, since: datetime | None = None) -> list[dict[str, Any]]:
+        """Rank drivers by safety score (lower idle % = better score)."""
+        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        rows = self.db.execute(
+            select(
+                Driver.id,
+                Driver.name,
+                func.count(Trip.id).label("trip_count"),
+                func.coalesce(func.sum(Trip.distance_miles), 0.0).label("distance"),
+                func.coalesce(func.sum(Trip.idle_time), 0.0).label("idle"),
+                func.coalesce(func.sum(
+                    func.extract("epoch", Trip.end_time) - func.extract("epoch", Trip.start_time)
+                ), 0.0).label("total_time"),
+            )
+            .join(Trip, Trip.driver_id == Driver.id)
+            .where(Trip.start_time >= since)
+            .group_by(Driver.id)
+            .order_by(desc("distance"))
+        ).mappings()
+        rankings = []
+        for r in rows:
+            total = float(r["total_time"])
+            idle = float(r["idle"])
+            idle_pct = round((idle / total) * 100, 2) if total else 0.0
+            rankings.append({
+                "driver_id": r["id"],
+                "name": r["name"],
+                "trip_count": int(r["trip_count"]),
+                "distance_driven": round(float(r["distance"]), 2),
+                "idle_pct": idle_pct,
+                "score": round(100 - idle_pct, 1),
+            })
+        return sorted(rankings, key=lambda x: x["score"], reverse=True)
+
+    def emissions_estimate(self, since: datetime | None = None) -> dict[str, Any]:
+        """Estimate CO₂ emissions from fuel consumption.
+        EPA factor: ~20.0 lbs CO₂ per gallon of diesel.
+        """
+        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        fuel = self.db.scalar(
+            select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time >= since)
+        ) or 0.0
+        CO2_LBS_PER_GAL = 20.0
+        co2_lbs = float(fuel) * CO2_LBS_PER_GAL
+        return {
+            "total_fuel_gal": round(float(fuel), 2),
+            "co2_lbs": round(co2_lbs, 1),
+            "co2_tons": round(co2_lbs / 2000, 2),
+        }

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.analytics.services import AnalyticsService
-from app.models import Driver, Trip, Vehicle
+from app.models import Driver, FaultCode, GPSLog, Trip, Vehicle
 
 
 def test_fleet_summary_and_driver_metrics(db):
@@ -28,3 +28,95 @@ def test_fleet_summary_and_driver_metrics(db):
     assert summary.average_mpg == 10
     assert drivers[0]["trip_count"] == 2
     assert drivers[0]["average_trip_length"] == 75
+
+
+def test_speed_analysis_counts_speeding_gps_points(db):
+    vehicle = Vehicle(geotab_id="v1", license_plate="A1")
+    db.add(vehicle)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        GPSLog(geotab_log_id="g1", vehicle_id=vehicle.id, timestamp=now, latitude=0, longitude=0, speed=45),
+        GPSLog(geotab_log_id="g2", vehicle_id=vehicle.id, timestamp=now, latitude=0, longitude=0, speed=55),
+        GPSLog(geotab_log_id="g3", vehicle_id=vehicle.id, timestamp=now, latitude=0, longitude=0, speed=72),
+        GPSLog(geotab_log_id="g4", vehicle_id=vehicle.id, timestamp=now, latitude=0, longitude=0, speed=85),
+    ])
+    db.commit()
+
+    result = AnalyticsService(db).speed_analysis(now - timedelta(days=1))
+    assert result["total_gps_points"] == 4
+    assert result["speeding_count"] == 2, "72 and 85 are above 70 mph threshold"
+    assert result["avg_speed"] == 64.2
+    assert result["max_speed"] == 85.0
+
+
+def test_fuel_efficiency_ranks_by_mpg(db):
+    v1 = Vehicle(geotab_id="v1", license_plate="A1")
+    v2 = Vehicle(geotab_id="v2", license_plate="A2")
+    db.add_all([v1, v2])
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        Trip(geotab_trip_id="t1", vehicle_id=v1.id, start_time=now - timedelta(hours=2), end_time=now - timedelta(hours=1), distance_miles=100, fuel_used=10, idle_time=0),
+        Trip(geotab_trip_id="t2", vehicle_id=v2.id, start_time=now - timedelta(hours=4), end_time=now - timedelta(hours=3), distance_miles=60, fuel_used=10, idle_time=0),
+    ])
+    db.commit()
+
+    result = AnalyticsService(db).fuel_efficiency(now - timedelta(days=1))
+    assert len(result) == 2
+    assert result[0]["label"] == "A1"  # 10 MPG
+    assert result[0]["mpg"] == 10.0
+    assert result[1]["mpg"] == 6.0  # 60/10
+
+
+def test_idling_summary_calculates_totals(db):
+    v1 = Vehicle(geotab_id="v1", license_plate="A1")
+    db.add(v1)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        Trip(geotab_trip_id="t1", vehicle_id=v1.id, start_time=now - timedelta(hours=2), end_time=now - timedelta(hours=1), distance_miles=50, fuel_used=5, idle_time=600),
+        Trip(geotab_trip_id="t2", vehicle_id=v1.id, start_time=now - timedelta(hours=4), end_time=now - timedelta(hours=3), distance_miles=30, fuel_used=3, idle_time=300),
+    ])
+    db.commit()
+
+    result = AnalyticsService(db).idling_summary(now - timedelta(days=1))
+    assert len(result["vehicles"]) == 1
+    assert result["vehicles"][0]["idle_seconds"] == 900.0
+    assert result["total_idle_hours"] == 0.25  # 900 / 3600
+    assert result["idle_pct"] > 0
+
+
+def test_driver_safety_rankings_sorts_by_score(db):
+    d1 = Driver(geotab_id="d1", name="Alice")
+    d2 = Driver(geotab_id="d2", name="Bob")
+    v1 = Vehicle(geotab_id="v1")
+    db.add_all([d1, d2, v1])
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        Trip(geotab_trip_id="t1", vehicle_id=v1.id, driver_id=d1.id, start_time=now - timedelta(hours=2), end_time=now, distance_miles=50, fuel_used=5, idle_time=100),
+        Trip(geotab_trip_id="t2", vehicle_id=v1.id, driver_id=d2.id, start_time=now - timedelta(hours=2), end_time=now, distance_miles=50, fuel_used=5, idle_time=1800),
+    ])
+    db.commit()
+
+    result = AnalyticsService(db).driver_safety_rankings(now - timedelta(days=1))
+    assert len(result) == 2
+    assert result[0]["name"] == "Alice"
+    assert result[0]["score"] > result[1]["score"]
+
+
+def test_emissions_estimate_from_fuel(db):
+    v1 = Vehicle(geotab_id="v1")
+    db.add(v1)
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        Trip(geotab_trip_id="t1", vehicle_id=v1.id, start_time=now - timedelta(hours=2), end_time=now - timedelta(hours=1), distance_miles=100, fuel_used=20, idle_time=0),
+    ])
+    db.commit()
+
+    result = AnalyticsService(db).emissions_estimate(now - timedelta(days=1))
+    assert result["total_fuel_gal"] == 20.0
+    assert result["co2_lbs"] == 400.0      # 20 × 20
+    assert result["co2_tons"] == 0.2       # 400 / 2000
