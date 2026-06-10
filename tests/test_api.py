@@ -103,12 +103,33 @@ def test_proxy_headers_middleware_registered():
 
 def test_production_session_via_proxy_headers():
     """SessionMiddleware with https_only=True and ProxyHeadersMiddleware:
-    X-Forwarded-Proto: https → Secure cookie accepted → session survives redirect."""
+    X-Forwarded-Proto: https → Secure cookie accepted → session survives auth guard."""
     from starlette.applications import Starlette
     from starlette.middleware.sessions import SessionMiddleware
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, RedirectResponse
     from starlette.testclient import TestClient
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from collections.abc import Callable
+    from starlette.requests import Request
+
+    class AuthGuard:
+        """Simulates production AuthMiddleware: checks session BEFORE passing to handler."""
+        def __init__(self, inner: Callable):
+            self.app = inner
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            request = Request(scope, receive)
+            path = request.url.path
+            if path in {"/login", "/health"}:
+                await self.app(scope, receive, send)
+                return
+            session = request.scope.get("session")
+            if session is None or not session.get("authenticated"):
+                await RedirectResponse("/login", 303)(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
 
     app = Starlette()
 
@@ -119,9 +140,11 @@ def test_production_session_via_proxy_headers():
     async def check_session(request):
         return JSONResponse({"auth": request.session.get("authenticated", False)})
 
-    app.add_route("/set", set_session, methods=["POST"])
-    app.add_route("/check", check_session)
+    app.add_route("/login", set_session, methods=["POST"])
+    app.add_route("/protected", check_session)
 
+    # CORRECT ORDER: Auth is innermost, Session wraps it, ProxyHeaders is outermost
+    app.add_middleware(AuthGuard)
     app.add_middleware(
         SessionMiddleware, secret_key="test-secret", https_only=True, same_site="lax"
     )
@@ -130,11 +153,12 @@ def test_production_session_via_proxy_headers():
     # Use HTTPS base URL so httpx's cookie jar accepts Secure cookies
     client = TestClient(app, base_url="https://testserver")
 
-    # Session write (simulates Railway with X-Forwarded-Proto)
-    set_resp = client.post("/set", headers={"X-Forwarded-Proto": "https"}, follow_redirects=False)
-    assert set_resp.status_code == 200
-    assert "session=" in set_resp.headers.get("set-cookie", ""), "Session cookie must be set"
+    # Login over proxy headers
+    login_resp = client.post("/login", headers={"X-Forwarded-Proto": "https"})
+    assert login_resp.status_code == 200
+    assert "session=" in login_resp.headers.get("set-cookie", ""), "Session cookie must be set"
 
-    # Session read — Secure cookie should be sent back over HTTPS
-    check_resp = client.get("/check", headers={"X-Forwarded-Proto": "https"})
-    assert check_resp.json()["auth"] is True
+    # Protected route must be accessible — session must survive AuthGuard check
+    protected_resp = client.get("/protected", headers={"X-Forwarded-Proto": "https"})
+    assert protected_resp.status_code == 200, "AuthGuard must not reject valid session"
+    assert protected_resp.json()["auth"] is True
