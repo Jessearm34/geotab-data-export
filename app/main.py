@@ -219,7 +219,7 @@ def executive(request: Request) -> HTMLResponse:
     with with_db() as db:
         analytics = AnalyticsService(db)
         summary = analytics.fleet_summary()
-        trends = analytics.daily_trends()
+        trends = analytics.daily_trends() or []
         utilization = analytics.vehicle_utilization()[:10]
         idling = analytics.idling_summary()
         speed = analytics.speed_analysis()

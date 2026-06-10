@@ -1,12 +1,35 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from app.schemas.domain import DriverIn, FaultCodeIn, GPSLogIn, TripIn, VehicleIn
 
+logger = logging.getLogger(__name__)
 KM_TO_MILES = 0.621371
 LITERS_TO_GALLONS = 0.264172
+
+
+def _parse_idling_duration(value: Any) -> float:
+    """Parse idlingDuration which can be numeric seconds or 'HH:MM:SS' string."""
+    if value is None or value == "" or value == 0:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    parts = text.split(":")
+    if len(parts) == 3:
+        try:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        except (ValueError, TypeError):
+            logger.warning("idlingDuration_parse_failed value=%s", value)
+            return 0.0
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        logger.warning("idlingDuration_parse_failed value=%s", value)
+        return 0.0
 
 
 def parse_dt(value: Any) -> datetime:
@@ -57,7 +80,7 @@ def trip_from_geotab(item: dict[str, Any]) -> TripIn | None:
         end_time=parse_dt(item.get("stop") or item.get("end")),
         distance_miles=float(item.get("distance", 0) or 0) * KM_TO_MILES,
         fuel_used=float(item.get("fuelUsed", 0) or 0) * LITERS_TO_GALLONS,
-        idle_time=float(item.get("idlingDuration", 0) or 0),
+        idle_time=_parse_idling_duration(item.get("idlingDuration")),
     )
 
 
