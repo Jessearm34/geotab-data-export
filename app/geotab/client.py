@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -20,6 +20,7 @@ _SESSION_ERROR_MARKERS = (
     "not authenticated",
     "credential",
 )
+_MIN_BISECT_GAP_SECONDS = 60
 
 
 class GeotabAPIError(RuntimeError):
@@ -141,6 +142,37 @@ class GeotabClient:
             params["search"] = search
         result = self._rpc("Get", params)
         return result if isinstance(result, list) else []
+
+    def get_all(self, type_name: str, search: dict[str, Any] | None = None, results_limit: int = 50000) -> list[dict[str, Any]]:
+        """Fetch all records, bisecting time range if result count hits the limit.
+
+        Geotab returns at most ``results_limit`` records. If we hit that limit,
+        the result may be truncated. This method splits the search window in half
+        and recurses to guarantee completeness.
+        """
+        if not search or "fromDate" not in search:
+            return self.get(type_name, search, results_limit=results_limit)
+        return self._get_bisect(type_name, search, results_limit, _MIN_BISECT_GAP_SECONDS)
+
+    def _get_bisect(
+        self, type_name: str, search: dict[str, Any], results_limit: int, min_gap: int
+    ) -> list[dict[str, Any]]:
+        result = self.get(type_name, search, results_limit=results_limit)
+        if len(result) < results_limit:
+            return result
+        from_str = search.get("fromDate", "")
+        to_str = search.get("toDate", "")
+        from_dt = datetime.fromisoformat(from_str.replace("Z", "+00:00")) if from_str else datetime.now(timezone.utc) - timedelta(days=365)
+        to_dt = datetime.fromisoformat(to_str.replace("Z", "+00:00")) if to_str else datetime.now(timezone.utc)
+        gap = int((to_dt - from_dt).total_seconds())
+        if gap < min_gap:
+            logger.warning("get_all_bisect_min_gap type=%s gap=%ds — returning partial result (%d records)", type_name, gap, len(result))
+            return result
+        mid = from_dt + (to_dt - from_dt) / 2
+        logger.info("get_all_bisect type=%s gap=%ds split=%s", type_name, gap, mid.isoformat())
+        first = self._get_bisect(type_name, {**search, "fromDate": iso_geotab(from_dt), "toDate": iso_geotab(mid)}, results_limit, min_gap)
+        second = self._get_bisect(type_name, {**search, "fromDate": iso_geotab(mid), "toDate": iso_geotab(to_dt)}, results_limit, min_gap)
+        return first + second
 
 
 def iso_geotab(dt: datetime) -> str:

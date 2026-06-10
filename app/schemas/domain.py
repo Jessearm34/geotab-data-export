@@ -58,7 +58,7 @@ class FleetSummary(BaseModel):
     active_vehicles: int
     total_fleet_miles: float
     total_fuel_consumed: float
-    average_mpg: float
+    average_mpg: float | None
 
 
 class ORMBase(BaseModel):

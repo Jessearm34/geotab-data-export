@@ -4,10 +4,11 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import Date, Float, cast, desc, func, select
+from sqlalchemy import Date, Float, case, cast, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.models import Driver, FaultCode, GPSLog, Trip, Vehicle
+from app.observability import timed
 from app.schemas.domain import FleetSummary
 
 logger = logging.getLogger(__name__)
@@ -17,26 +18,36 @@ class AnalyticsService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def fleet_summary(self, since: datetime | None = None) -> FleetSummary:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+    @staticmethod
+    def _since(since: datetime | None) -> datetime:
+        return since or datetime.now(timezone.utc) - timedelta(days=30)
+
+    @staticmethod
+    def _until(until: datetime | None) -> datetime:
+        return until or datetime.now(timezone.utc)
+
+    @timed()
+    def fleet_summary(self, since: datetime | None = None, until: datetime | None = None) -> FleetSummary:
+        since, until = self._since(since), self._until(until)
         total_vehicles = self.db.scalar(select(func.count(Vehicle.id))) or 0
-        trip_count = self.db.scalar(select(func.count(Trip.id)).where(Trip.start_time >= since)) or 0
-        logger.info("dashboard_query fleet_summary total_vehicles=%s trip_count=%s since=%s", total_vehicles, trip_count, since.isoformat())
+        trip_count = self.db.scalar(select(func.count(Trip.id)).where(Trip.start_time.between(since, until))) or 0
+        logger.info("dashboard_query fleet_summary total_vehicles=%s trip_count=%s since=%s until=%s", total_vehicles, trip_count, since.isoformat(), until.isoformat())
         active_vehicles = (
-            self.db.scalar(select(func.count(func.distinct(Trip.vehicle_id))).where(Trip.start_time >= since)) or 0
+            self.db.scalar(select(func.count(func.distinct(Trip.vehicle_id))).where(Trip.start_time.between(since, until))) or 0
         )
-        total_miles = self.db.scalar(select(func.coalesce(func.sum(Trip.distance_miles), 0.0)).where(Trip.start_time >= since)) or 0
-        fuel = self.db.scalar(select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time >= since)) or 0
+        total_miles = self.db.scalar(select(func.coalesce(func.sum(Trip.distance_miles), 0.0)).where(Trip.start_time.between(since, until))) or 0
+        fuel = self.db.scalar(select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time.between(since, until))) or 0
         return FleetSummary(
             total_vehicles=int(total_vehicles),
             active_vehicles=int(active_vehicles),
             total_fleet_miles=round(float(total_miles), 2),
             total_fuel_consumed=round(float(fuel), 2),
-            average_mpg=round(float(total_miles) / float(fuel), 2) if fuel else 0.0,
+            average_mpg=round(float(total_miles) / float(fuel), 2) if fuel else None,
         )
 
-    def vehicle_utilization(self, since: datetime | None = None) -> list[dict[str, Any]]:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+    @timed()
+    def vehicle_utilization(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Vehicle.id,
@@ -45,8 +56,7 @@ class AnalyticsService:
                 func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"),
                 func.coalesce(func.sum((func.extract("epoch", Trip.end_time) - func.extract("epoch", Trip.start_time)) / 3600), 0.0).label("hours"),
             )
-            .join(Trip, Trip.vehicle_id == Vehicle.id, isouter=True)
-            .where((Trip.start_time >= since) | (Trip.id.is_(None)))
+            .join(Trip, (Trip.vehicle_id == Vehicle.id) & (Trip.start_time.between(since, until)), isouter=True)
             .group_by(Vehicle.id)
             .order_by(desc("miles"))
         ).mappings()
@@ -62,8 +72,9 @@ class AnalyticsService:
             for row in rows
         ]
 
-    def driver_metrics(self, since: datetime | None = None) -> list[dict[str, Any]]:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+    @timed()
+    def driver_metrics(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Driver.id,
@@ -72,8 +83,7 @@ class AnalyticsService:
                 func.coalesce(func.sum(Trip.distance_miles), 0.0).label("distance"),
                 func.coalesce(func.avg(Trip.distance_miles), 0.0).label("avg_trip"),
             )
-            .join(Trip, Trip.driver_id == Driver.id, isouter=True)
-            .where((Trip.start_time >= since) | (Trip.id.is_(None)))
+            .join(Trip, (Trip.driver_id == Driver.id) & (Trip.start_time.between(since, until)), isouter=True)
             .group_by(Driver.id)
             .order_by(desc("distance"))
         ).mappings()
@@ -88,18 +98,19 @@ class AnalyticsService:
             for row in rows
         ]
 
-    def maintenance_metrics(self, since: datetime | None = None) -> dict[str, Any]:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+    @timed()
+    def maintenance_metrics(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
+        since, until = self._since(since), self._until(until)
         fault_rows = self.db.execute(
             select(FaultCode.fault_code, func.count(FaultCode.id).label("count"))
-            .where(FaultCode.timestamp >= since)
+            .where(FaultCode.timestamp.between(since, until))
             .group_by(FaultCode.fault_code)
             .order_by(desc("count"))
         ).mappings()
         current = self.db.execute(
             select(FaultCode, Vehicle)
             .join(Vehicle, Vehicle.id == FaultCode.vehicle_id)
-            .where(FaultCode.timestamp >= datetime.now(timezone.utc) - timedelta(days=7))
+            .where(FaultCode.timestamp.between(since, until))
             .order_by(FaultCode.timestamp.desc())
             .limit(100)
         ).all()
@@ -117,13 +128,14 @@ class AnalyticsService:
             ],
         }
 
-    def idle_analysis(self, since: datetime | None = None) -> dict[str, float]:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
-        idle = self.db.scalar(select(func.coalesce(func.sum(Trip.idle_time), 0.0)).where(Trip.start_time >= since)) or 0
+    @timed()
+    def idle_analysis(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, float]:
+        since, until = self._since(since), self._until(until)
+        idle = self.db.scalar(select(func.coalesce(func.sum(Trip.idle_time), 0.0)).where(Trip.start_time.between(since, until))) or 0
         driven = (
             self.db.scalar(
                 select(func.coalesce(func.sum(func.extract("epoch", Trip.end_time) - func.extract("epoch", Trip.start_time)), 0.0)).where(
-                    Trip.start_time >= since
+                    Trip.start_time.between(since, until)
                 )
             )
             or 0
@@ -131,18 +143,19 @@ class AnalyticsService:
         total = float(idle) + float(driven)
         return {"idle_duration": round(float(idle), 2), "idle_percentage": round((float(idle) / total) * 100, 2) if total else 0}
 
-    def daily_trends(self, since: datetime | None = None) -> list[dict[str, Any]]:
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+    @timed()
+    def daily_trends(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
-                cast(Trip.start_time, Date).label("day"),
+                func.date(Trip.start_time).label("day"),
                 func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"),
                 func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
                 func.count(Trip.id).label("trips"),
             )
-            .where(Trip.start_time >= since)
-            .group_by("day")
-            .order_by("day")
+            .where(Trip.start_time.between(since, until))
+            .group_by(func.date(Trip.start_time))
+            .order_by(func.date(Trip.start_time))
         ).mappings()
         result = [
             {
@@ -154,7 +167,9 @@ class AnalyticsService:
             for row in rows
         ]
         logger.info("dashboard_query daily_trends rows=%s", len(result))
+        return result
 
+    @timed()
     def vehicle_detail(self, vehicle_id: int, since: datetime, until: datetime) -> dict[str, Any]:
         trips = self.db.execute(
             select(Trip).where(Trip.vehicle_id == vehicle_id, Trip.start_time >= since, Trip.start_time <= until).order_by(Trip.start_time)
@@ -181,15 +196,22 @@ class AnalyticsService:
 
     def _daily_vehicle_mileage(self, vehicle_id: int, since: datetime, until: datetime) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            select(cast(Trip.start_time, Date).label("day"), func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"))
+            select(func.date(Trip.start_time).label("day"), func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"))
             .where(Trip.vehicle_id == vehicle_id, Trip.start_time >= since, Trip.start_time <= until)
-            .group_by("day")
-            .order_by("day")
+            .group_by(func.date(Trip.start_time))
+            .order_by(func.date(Trip.start_time))
         ).mappings()
         return [{"day": str(row["day"]), "miles": round(float(row["miles"]), 2)} for row in rows]
 
-    def latest_locations(self) -> list[dict[str, Any]]:
-        subq = select(GPSLog.vehicle_id, func.max(GPSLog.timestamp).label("max_timestamp")).group_by(GPSLog.vehicle_id).subquery()
+    @timed()
+    def latest_locations(self, max_age_days: int = 7) -> list[dict[str, Any]]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        subq = (
+            select(GPSLog.vehicle_id, func.max(GPSLog.timestamp).label("max_timestamp"))
+            .where(GPSLog.timestamp >= cutoff)
+            .group_by(GPSLog.vehicle_id)
+            .subquery()
+        )
         rows = self.db.execute(
             select(GPSLog, Vehicle)
             .join(subq, (GPSLog.vehicle_id == subq.c.vehicle_id) & (GPSLog.timestamp == subq.c.max_timestamp))
@@ -209,28 +231,43 @@ class AnalyticsService:
 
     # ── Executive Safety & Sustainability Metrics ─────────────────────── #
 
-    def speed_analysis(self, since: datetime | None = None) -> dict[str, Any]:
+    @timed()
+    def speed_analysis(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
         """Speeding analysis: GPS points above threshold, speed distribution."""
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        since, until = self._since(since), self._until(until)
         SPEED_THRESHOLD = 70
-        rows = self.db.execute(
-            select(GPSLog.speed).where(GPSLog.timestamp >= since)
-        ).mappings()
-        speeds = [float(r["speed"]) for r in rows]
-        logger.info("dashboard_query speed_analysis gps_points=%s", len(speeds))
-        speeding = [s for s in speeds if s > SPEED_THRESHOLD]
+        stats = self.db.execute(
+            select(
+                func.count(GPSLog.id).label("count"),
+                func.coalesce(func.avg(GPSLog.speed), 0.0).label("avg"),
+                func.coalesce(func.max(GPSLog.speed), 0.0).label("max"),
+                func.coalesce(func.sum(case((GPSLog.speed > SPEED_THRESHOLD, 1), else_=0)), 0).label("speeding"),
+            ).where(GPSLog.timestamp.between(since, until))
+        ).one()
+        sample = [
+            float(r[0]) for r in
+            self.db.execute(
+                select(GPSLog.speed)
+                .where(GPSLog.timestamp.between(since, until))
+                .order_by(func.random())
+                .limit(1000)
+            ).all()
+            if r[0] is not None
+        ]
+        logger.info("dashboard_query speed_analysis gps_points=%s", stats.count)
         return {
-            "total_gps_points": len(speeds),
-            "speeding_count": len(speeding),
-            "speeding_pct": round((len(speeding) / len(speeds)) * 100, 2) if speeds else 0.0,
-            "speed_distribution": speeds[:1000],
-            "avg_speed": round(sum(speeds) / len(speeds), 1) if speeds else 0.0,
-            "max_speed": round(max(speeds), 1) if speeds else 0.0,
+            "total_gps_points": int(stats.count),
+            "speeding_count": int(stats.speeding),
+            "speeding_pct": round((float(stats.speeding) / float(stats.count)) * 100, 2) if stats.count else 0.0,
+            "speed_distribution": sample,
+            "avg_speed": round(float(stats.avg), 1) if stats.count else 0.0,
+            "max_speed": round(float(stats.max), 1) if stats.count else 0.0,
         }
 
-    def fuel_efficiency(self, since: datetime | None = None) -> list[dict[str, Any]]:
+    @timed()
+    def fuel_efficiency(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
         """Per-vehicle MPG ranking (only vehicles with fuel data)."""
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Vehicle.id,
@@ -239,7 +276,7 @@ class AnalyticsService:
                 func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
             )
             .join(Trip, Trip.vehicle_id == Vehicle.id)
-            .where(Trip.start_time >= since, Trip.fuel_used > 0)
+            .where(Trip.start_time.between(since, until), Trip.fuel_used > 0)
             .group_by(Vehicle.id)
             .having(func.coalesce(func.sum(Trip.fuel_used), 0.0) > 0)
             .order_by(desc("miles"))
@@ -257,9 +294,10 @@ class AnalyticsService:
             })
         return sorted(result, key=lambda x: x["mpg"], reverse=True)
 
-    def idling_summary(self, since: datetime | None = None) -> dict[str, Any]:
+    @timed()
+    def idling_summary(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
         """Per-vehicle idling breakdown."""
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Vehicle.id,
@@ -270,7 +308,7 @@ class AnalyticsService:
                 ), 0.0).label("total_time"),
             )
             .join(Trip, Trip.vehicle_id == Vehicle.id)
-            .where(Trip.start_time >= since)
+            .where(Trip.start_time.between(since, until))
             .group_by(Vehicle.id)
             .order_by(desc("idle"))
         ).mappings()
@@ -294,9 +332,10 @@ class AnalyticsService:
             "idle_pct": round((total_idle / total_time) * 100, 2) if total_time else 0.0,
         }
 
-    def driver_safety_rankings(self, since: datetime | None = None) -> list[dict[str, Any]]:
+    @timed()
+    def driver_safety_rankings(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
         """Rank drivers by safety score (lower idle % = better score)."""
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Driver.id,
@@ -309,7 +348,7 @@ class AnalyticsService:
                 ), 0.0).label("total_time"),
             )
             .join(Trip, Trip.driver_id == Driver.id)
-            .where(Trip.start_time >= since)
+            .where(Trip.start_time.between(since, until))
             .group_by(Driver.id)
             .order_by(desc("distance"))
         ).mappings()
@@ -328,13 +367,14 @@ class AnalyticsService:
             })
         return sorted(rankings, key=lambda x: x["score"], reverse=True)
 
-    def emissions_estimate(self, since: datetime | None = None) -> dict[str, Any]:
+    @timed()
+    def emissions_estimate(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
         """Estimate CO₂ emissions from fuel consumption.
         EPA factor: ~20.0 lbs CO₂ per gallon of diesel.
         """
-        since = since or datetime.now(timezone.utc) - timedelta(days=30)
+        since, until = self._since(since), self._until(until)
         fuel = self.db.scalar(
-            select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time >= since)
+            select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time.between(since, until))
         ) or 0.0
         CO2_LBS_PER_GAL = 20.0
         co2_lbs = float(fuel) * CO2_LBS_PER_GAL
