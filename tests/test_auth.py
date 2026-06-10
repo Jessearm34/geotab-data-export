@@ -60,6 +60,22 @@ def test_scheduler_skips_start_without_geotab_credentials(monkeypatch):
     assert start_scheduler() is None
 
 
+def test_password_hash_roundtrip(monkeypatch):
+    """hash_password() + verify_admin_password() roundtrips correctly.
+
+    This catches future dependency breakage (the app uses stdlib hashlib
+    pbkdf2_hmac, not passlib+bcrypt).
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password("my-password"))
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    _clear_settings_cache()
+
+    assert verify_admin_password("my-password") is True
+    assert verify_admin_password("wrong-password") is False
+
+
 def test_admin_password_hash_precedence_over_plain_password(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")

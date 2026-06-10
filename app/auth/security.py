@@ -14,16 +14,7 @@ from starlette.responses import RedirectResponse, Response
 
 from app.config import get_settings
 
-try:
-    from passlib.context import CryptContext
-    import passlib.exc as passlib_exc
-except ModuleNotFoundError:
-    CryptContext = None
-    passlib_exc = None
-
 logger = logging.getLogger(__name__)
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto") if CryptContext else None
 
 _LOGIN_ATTEMPT_WINDOW_SECONDS = 15 * 60
 _LOGIN_ATTEMPT_LIMIT = 5
@@ -31,28 +22,27 @@ _LOGIN_FAILURE_DELAY_SECONDS = 1.0
 _login_attempts: dict[str, list[float]] = defaultdict(list)
 
 
+# PBKDF2-HMAC-SHA256 constants — used in place of passlib+bcrypt to avoid
+# dependency compatibility issues (passlib is incompatible with bcrypt >= 5).
+_PBKDF2_ROUNDS = 250_000
+
+
 def hash_password(password: str) -> str:
-    if pwd_context:
-        return pwd_context.hash(password)
     salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 250_000).hex()
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS).hex()
     return f"pbkdf2_sha256${salt}${digest}"
 
 
 def _verify_hash(password: str, stored: str) -> bool:
-    if pwd_context:
-        try:
-            return pwd_context.verify(password, stored)
-        except passlib_exc.UnknownHashError:
-            logger.warning("admin_password_hash format not recognised by passlib")
-            return False
-        except Exception:
-            logger.warning("admin_password_hash verification failed", exc_info=True)
-            return False
     if not stored.startswith("pbkdf2_sha256$"):
+        logger.warning("admin_password_hash has unrecognized format")
         return False
-    _, salt, digest = stored.split("$", 2)
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 250_000).hex()
+    try:
+        _, salt, digest = stored.split("$", 2)
+    except ValueError:
+        logger.warning("admin_password_hash has malformed structure")
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS).hex()
     return hmac.compare_digest(candidate, digest)
 
 
