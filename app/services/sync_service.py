@@ -34,7 +34,7 @@ class SyncService:
         if metadata and metadata.last_sync_timestamp:
             stamp = metadata.last_sync_timestamp
             return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
-        return _now() - timedelta(hours=self.settings.sync_lookback_hours)
+        return _now() - timedelta(days=365)
 
     def set_last_sync(self, entity_name: str, timestamp: datetime) -> None:
         metadata = self.db.scalar(select(SyncMetadata).where(SyncMetadata.entity_name == entity_name))
