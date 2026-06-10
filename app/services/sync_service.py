@@ -34,7 +34,7 @@ class SyncService:
         if metadata and metadata.last_sync_timestamp:
             stamp = metadata.last_sync_timestamp
             return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
-        return _now() - timedelta(hours=self.settings.sync_lookback_hours)
+        return _now() - timedelta(days=365)
 
     def set_last_sync(self, entity_name: str, timestamp: datetime) -> None:
         metadata = self.db.scalar(select(SyncMetadata).where(SyncMetadata.entity_name == entity_name))
@@ -113,7 +113,12 @@ class SyncService:
         return self._run_logged("drivers", self._sync_drivers)
 
     def _sync_drivers(self) -> int:
-        rows = [driver_from_geotab(item).model_dump() for item in self.client.get("User", {"isDriver": True}, results_limit=50000)]
+        items = self.client.get("User", results_limit=50000)
+        rows = [
+            driver_from_geotab(item).model_dump()
+            for item in items
+            if item.get("isDriver")
+        ]
         return self._upsert_postgres(Driver, rows, ["geotab_id"])
 
     def sync_trips(self) -> int:

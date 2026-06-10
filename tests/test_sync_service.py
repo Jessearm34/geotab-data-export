@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from app.models import SyncMetadata, Trip, Vehicle
+from app.models import Driver, FaultCode, GPSLog, SyncMetadata, Trip, Vehicle
 from app.services.sync_service import SyncService
 
 
@@ -11,13 +11,26 @@ class FakeGeotabClient:
     def get(self, type_name, search=None, results_limit=5000):
         self.searches.append((type_name, search))
         if type_name == "Device":
-            return [{"id": "v1", "serialNumber": "S1", "licensePlate": "A1"}]
+            return [
+                {"id": "v1", "serialNumber": "S1", "licensePlate": "A1"},
+                {"id": "v2", "serialNumber": "S2", "licensePlate": "A2"},
+            ]
+        if type_name == "User":
+            users = [
+                {"id": "d1", "firstName": "Jane", "lastName": "Driver", "employeeNo": "E1", "isDriver": True},
+                {"id": "d2", "name": "Bob Operator", "isDriver": True},
+                {"id": "u1", "name": "Admin User"},
+            ]
+            _all = users
+            if search and search.get("isDriver") is True:
+                _all = [u for u in users if u.get("isDriver")]
+            return _all
         if type_name == "Trip":
             return [
                 {
                     "id": "t1",
                     "device": {"id": "v1"},
-                    "driver": None,
+                    "driver": {"id": "d1"},
                     "start": "2026-01-01T10:00:00+00:00",
                     "stop": "2026-01-01T11:00:00+00:00",
                     "distance": 16.0934,
@@ -25,25 +38,133 @@ class FakeGeotabClient:
                     "idlingDuration": 30,
                 }
             ]
+        if type_name == "LogRecord":
+            return [
+                {
+                    "id": "g1",
+                    "device": {"id": "v1"},
+                    "dateTime": "2026-01-01T10:30:00+00:00",
+                    "latitude": 30.0,
+                    "longitude": -90.0,
+                    "speed": 45.0,
+                }
+            ]
+        if type_name == "FaultData":
+            return [
+                {
+                    "id": "f1",
+                    "device": {"id": "v1"},
+                    "dateTime": "2026-01-01T10:35:00+00:00",
+                    "diagnostic": {"code": "P0001", "name": "Test fault"},
+                }
+            ]
         return []
 
 
-def test_incremental_sync_and_upsert(db):
+def test_sync_all_populates_every_table(db):
     client = FakeGeotabClient()
     service = SyncService(db, client=client)
-    service.sync_vehicles()
-    service.sync_trips()
-    service.sync_trips()
+    counts = service.sync_all()
 
-    assert db.query(Vehicle).count() == 1
+    assert counts["vehicles"] == 2
+    assert counts["drivers"] > 0
+    assert counts["trips"] == 1
+    assert counts["gps_logs"] == 1
+    assert counts["faults"] == 1
+
+    assert db.query(Vehicle).count() == 2
     assert db.query(Trip).count() == 1
-    assert db.query(SyncMetadata).filter_by(entity_name="trips").one().last_sync_timestamp is not None
-    trip_searches = [search for type_name, search in client.searches if type_name == "Trip"]
-    assert all("fromDate" in search for search in trip_searches)
+    assert db.query(GPSLog).count() == 1
+    assert db.query(FaultCode).count() == 1
+    assert db.query(SyncMetadata).count() == 5
 
 
-def test_last_sync_uses_metadata(db):
+def test_sync_drivers_filters_drivers(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    count = service.sync_drivers()
+
+    assert count == 2, "Should only sync users where isDriver=True"
+    names = {r.name for r in db.query(Driver).all()}
+    assert "Jane Driver" in names
+    assert "Bob Operator" in names
+    assert "Admin User" not in names
+
+
+def test_last_sync_initial_lookback_is_365_days(db):
+    service = SyncService(db, client=FakeGeotabClient())
+    result = service.last_sync("trips")
+    delta = datetime.now(timezone.utc) - result
+    assert delta.days >= 364, f"Expected ~365 day lookback, got {delta.days} days"
+
+
+def test_last_sync_uses_stored_metadata(db):
     stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
     db.add(SyncMetadata(entity_name="trips", last_sync_timestamp=stamp))
     db.commit()
     assert SyncService(db, client=FakeGeotabClient()).last_sync("trips") == stamp
+
+
+def test_sync_trips_links_vehicles(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    service.sync_vehicles()
+    service.sync_trips()
+
+    trip = db.query(Trip).one()
+    assert trip.vehicle_id is not None
+    assert trip.driver_id is None  # drivers not synced yet — no link
+    assert round(trip.distance_miles, 1) == 10.0
+    assert round(trip.fuel_used, 2) == 1.0
+
+
+def test_sync_trips_with_drivers_links_both(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    service.sync_all()
+
+    trip = db.query(Trip).one()
+    assert trip.vehicle_id is not None
+    assert trip.driver_id is not None
+    driver = db.query(Driver).get(trip.driver_id)
+    assert driver is not None
+
+
+def test_sync_gps_logs_populates(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    service.sync_vehicles()
+    service.sync_logs()
+
+    log = db.query(GPSLog).one()
+    assert log.vehicle_id is not None
+    assert round(log.latitude, 1) == 30.0
+    assert round(log.speed, 1) == 45.0
+
+
+def test_sync_faults_populates(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    service.sync_vehicles()
+    service.sync_faults()
+
+    fault = db.query(FaultCode).one()
+    assert fault.vehicle_id is not None
+    assert fault.fault_code == "P0001"
+    assert fault.description == "Test fault"
+
+
+def test_incremental_sync_deduplicates(db):
+    client = FakeGeotabClient()
+    service = SyncService(db, client=client)
+    service.sync_all()
+    service.sync_all()
+
+    assert db.query(Vehicle).count() == 2
+    assert db.query(Trip).count() == 1
+    assert db.query(GPSLog).count() == 1
+    assert db.query(FaultCode).count() == 1
+
+    last_sync = {m.entity_name: m.last_sync_timestamp for m in db.query(SyncMetadata).all()}
+    for name in ("vehicles", "drivers", "trips", "gps_logs", "faults"):
+        assert last_sync.get(name) is not None, f"{name} should have a sync timestamp"
