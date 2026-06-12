@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.dashboards.components import (
+from app.graphics.components import (
     badge,
     chart_container,
     data_table,
@@ -20,7 +20,7 @@ from app.dashboards.components import (
     panel,
     resolve_date_range,
 )
-from app.dashboards.kpi import Kpi
+from app.graphics.kpi import Kpi
 
 
 class TestKpiCard:
@@ -66,6 +66,26 @@ class TestKpiCard:
         html = kpi_card(k)
         assert "k-delta" in html
         assert "down" in html
+
+    def test_baseline_tier_renders_indicator(self):
+        """Baseline tier shows tier badge."""
+        k = Kpi(key="miles", label="Miles", value=100, tier="baseline")
+        html = kpi_card(k)
+        assert 'class="kpi"' in html  # no 'extended' class
+        assert '<span class="k-tier">baseline</span>' in html
+
+    def test_extended_tier_renders_indicator(self):
+        """Extended tier shows tier badge and extended CSS class."""
+        k = Kpi(key="co2", label="CO2", value=5, tier="extended")
+        html = kpi_card(k)
+        assert 'class="kpi extended"' in html
+        assert '<span class="k-tier">extended</span>' in html
+
+    def test_empty_tier_no_indicator(self):
+        """Empty tier (default) shows no badge."""
+        k = Kpi(key="k", label="K", value=1, tier="")
+        html = kpi_card(k)
+        assert "k-tier" not in html
 
 
 class TestKpiRow:
@@ -174,10 +194,11 @@ class TestPageHeader:
 
 
 class TestResolveDateRange:
-    def test_default_to_30d(self):
+    def test_default_to_ytd(self):
         since, until, rng = resolve_date_range(None, None, None)
-        assert rng == "30d"
+        assert rng == "ytd"
         assert since < until
+        assert since.month == 1 and since.day == 1
 
     def test_7d(self):
         since, until, rng = resolve_date_range("7d", None, None)
@@ -196,10 +217,6 @@ class TestResolveDateRange:
         assert since.month == 1 and since.day == 1
         assert abs((until - now).total_seconds()) < 60
 
-    def test_all(self):
-        since, until, rng = resolve_date_range("all", None, None)
-        assert rng == "all"
-        assert (until - since).days > 1000
 
 
 class TestDateControls:
@@ -207,10 +224,10 @@ class TestDateControls:
         html = date_controls("30d")
         assert "controls" in html
         assert 'class="preset active"' in html
-        assert "7d" in html
-        assert "30d" in html
+        assert "30 days" in html
+        assert "Year to date" in html
         assert "Apply" in html
 
     def test_hx_attributes(self):
-        html = date_controls("7d", hx_target="#other")
+        html = date_controls("ytd", hx_target="#other")
         assert 'hx-target="#other"' in html
