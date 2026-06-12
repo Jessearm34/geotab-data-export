@@ -15,6 +15,23 @@ def test_health_is_public():
     assert response.json()["status"] == "ok"
 
 
+def test_diagnostics_is_public():
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.get("/api/diagnostics")
+    assert response.status_code == 200
+    data = response.json()
+    assert "env" in data
+    assert "db" in data
+    assert "row_counts" in data
+    assert "sync_watermarks" in data
+    assert "recent_sync_logs" in data
+    # env checks exist even when not configured
+    assert "GEOTAB_DATABASE" in data["env"]
+    assert "DATABASE_URL_type" in data["env"]
+
+
 def test_static_served():
     from app.main import app
 

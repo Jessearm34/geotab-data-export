@@ -140,7 +140,7 @@ class AuthMiddleware:
             return
         request = Request(scope, receive)
         path = request.url.path
-        public = path.startswith("/static") or path in {"/login", "/health"}
+        public = path.startswith("/static") or path in {"/login", "/health", "/api/diagnostics"}
         if not public and not is_authenticated(request):
             response = RedirectResponse("/login", status_code=303)
             await response(scope, receive, send)
