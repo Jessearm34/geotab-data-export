@@ -77,6 +77,9 @@ from app.jobs.scheduler import start_scheduler
 from app.logging_config import configure_logging
 from app.models import Driver, FaultCode, Trip, Vehicle
 
+import logging
+logger = logging.getLogger(__name__)
+
 configure_logging()
 settings = get_settings()
 
@@ -307,6 +310,15 @@ def executive(request: Request, range: str | None = None, start: str | None = No
 def vehicles(request: Request) -> HTMLResponse:
     with with_db() as db:
         vehicle_list = db.query(Vehicle).order_by(Vehicle.license_plate.asc().nullslast()).all()
+        logger.info("dashboard vehicle_list count=%s", len(vehicle_list))
+        if not vehicle_list:
+            body = (page_header("Vehicle Dashboard")
+                    + empty_state(
+                        "No vehicles are available yet. "
+                        "Vehicle data must be synced from Geotab before this dashboard can display vehicle details. "
+                        "This happens automatically when Geotab credentials are configured and the scheduler runs."
+                    ))
+            return page(request, "Vehicle Dashboard", body, active_nav="/vehicles")
         selected = vehicle_list[0].id if vehicle_list else 0
         options = "".join(f'<option value="{v.id}">{v.license_plate or v.vin or v.geotab_id}</option>' for v in vehicle_list)
         body = (page_header("Vehicle Dashboard")
@@ -359,6 +371,16 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
     since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
         metrics = AnalyticsService(db).driver_metrics(since, until)
+        logger.info("dashboard driver_metrics count=%s range=%s", len(metrics), rng)
+        if not metrics:
+            body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
+                    + date_controls(rng, hx_target="#main-content")
+                    + empty_state(
+                        "No driver data is available for the selected period. "
+                        "Driver and trip data must be synced from Geotab before this dashboard can display driver performance metrics. "
+                        "This happens automatically when Geotab credentials are configured and the scheduler runs.",
+                    ))
+            return page(request, "Driver Dashboard", body, active_nav="/drivers")
         rows = data_table(
             ["Driver", "Trips", "Distance", "Avg Trip"],
             [
@@ -385,6 +407,17 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
     since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
         metrics = AnalyticsService(db).maintenance_metrics(since, until)
+        fault_count = metrics["open_fault_counts"]
+        logger.info("dashboard maintenance_metrics faults=%s range=%s", fault_count, rng)
+        if not fault_count and not metrics["current_faults"]:
+            body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
+                    + date_controls(rng, hx_target="#main-content")
+                    + empty_state(
+                        "No diagnostic fault data is available for the selected period. "
+                        "Fault data is synced from Geotab when credentials are configured. "
+                        "If credentials are set, check that vehicles have active diagnostic trouble codes.",
+                    ))
+            return page(request, "Maintenance Dashboard", body, active_nav="/maintenance")
         current = data_table(
             ["Vehicle", "Date", "Code", "Description"],
             [
@@ -409,6 +442,15 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
 def fleet_map(request: Request) -> HTMLResponse:
     with with_db() as db:
         locations = AnalyticsService(db).latest_locations()
+        logger.info("dashboard fleet_map locations=%s", len(locations))
+        if not locations:
+            body = (page_header("Fleet Map")
+                    + empty_state(
+                        "No vehicle location data is available. "
+                        "GPS log data must be synced from Geotab before vehicle positions can appear on the map. "
+                        "This happens automatically when Geotab credentials are configured and the scheduler runs.",
+                    ))
+            return page(request, "Fleet Map", body, active_nav="/fleet-map")
         body = (page_header("Fleet Map")
                 + panel(map_chart(locations, "Latest Vehicle Locations"), title="Latest Vehicle Locations", dot="#38bdf8"))
         return page(request, "Fleet Map", body, active_nav="/fleet-map")

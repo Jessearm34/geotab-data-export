@@ -179,6 +179,84 @@ def test_all_protected_routes_redirect_when_unauthenticated(monkeypatch):
         assert resp.status_code == 303, f"{path} should return 303, got {resp.status_code}"
 
 
+def _authenticated_client(monkeypatch) -> TestClient:
+    """Return a TestClient that has an active admin session."""
+    import tempfile
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD_HASH", raising=False)
+
+    # Use a temp file database (file:// works with check_same_thread=False)
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_db.close()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_db.name}")
+
+    from app.config import get_settings
+    import app.main as main_module
+    get_settings.cache_clear()
+    main_module.settings = get_settings()
+
+    # Rebuild engine + SessionLocal for the temp database
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.database import session as db_session
+    db_session.engine = create_engine(
+        f"sqlite:///{tmp_db.name}", pool_pre_ping=True, future=True,
+        connect_args={"check_same_thread": False},
+    )
+    db_session.SessionLocal = sessionmaker(
+        bind=db_session.engine, autoflush=False, autocommit=False,
+        expire_on_commit=False, future=True,
+    )
+
+    # Replace the reference in main.py too (it captures SessionLocal at import)
+    main_module.SessionLocal = db_session.SessionLocal
+
+    # Create all tables
+    from app.models import Base
+    Base.metadata.create_all(db_session.engine)
+
+    client = TestClient(main_module.app, follow_redirects=False)
+
+    _ = _login(client)
+    return client
+
+
+class TestDashboardEmptyStates:
+    """Verify each dashboard tab shows a proper empty state when no data exists."""
+
+    def test_vehicles_empty_state(self, monkeypatch):
+        client = _authenticated_client(monkeypatch)
+        resp = client.get("/vehicles")
+        assert resp.status_code == 200
+        assert "No vehicles are available yet" in resp.text
+        assert "Vehicle Dashboard" in resp.text
+        assert "synced from Geotab" in resp.text
+
+    def test_drivers_empty_state(self, monkeypatch):
+        client = _authenticated_client(monkeypatch)
+        resp = client.get("/drivers")
+        assert resp.status_code == 200
+        assert "No driver data is available" in resp.text
+        assert "Driver Dashboard" in resp.text
+
+    def test_maintenance_empty_state(self, monkeypatch):
+        client = _authenticated_client(monkeypatch)
+        resp = client.get("/maintenance")
+        assert resp.status_code == 200
+        assert "No diagnostic fault data is available" in resp.text
+        assert "Maintenance Dashboard" in resp.text
+
+    def test_fleet_map_empty_state(self, monkeypatch):
+        client = _authenticated_client(monkeypatch)
+        resp = client.get("/fleet-map")
+        assert resp.status_code == 200
+        assert "No vehicle location data is available" in resp.text
+        assert "Fleet Map" in resp.text
+
+
 def test_middleware_stack_order_correct():
     """Verify middleware order: Auth (innermost) → Session → ProxyHeaders (outermost).
 
