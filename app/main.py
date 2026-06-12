@@ -246,6 +246,75 @@ def health() -> JSONResponse:
     return JSONResponse(sync_status)
 
 
+@rt("/api/diagnostics")
+def diagnostics() -> JSONResponse:
+    """Diagnostic endpoint: env var presence, DB state, sync status.
+
+    This endpoint is intentionally NOT auth-guarded so Railway health
+    monitors and operators can check it without a session. It exposes no
+    secrets — only present/absent status for sensitive fields.
+    """
+    from app.config import get_settings, missing_geotab_credentials
+    from app.models import Driver, FaultCode, FuelEvent, GPSLog, SyncLog, SyncMetadata, Trip, Vehicle
+    from app.database.session import SessionLocal
+
+    s = get_settings()
+    env_checks = {
+        "environment": s.environment,
+        "GEOTAB_DATABASE": "present" if s.geotab_database else "missing",
+        "GEOTAB_USERNAME": "present" if s.geotab_username else "missing",
+        "GEOTAB_PASSWORD": "present" if s.geotab_password else "missing",
+        "GEOTAB_SERVER": s.geotab_server,
+        "DATABASE_URL_type": "postgresql" if "postgres" in (s.database_url or "") else "sqlite",
+        "DATABASE_URL_target": s.database_url.split("@")[-1].split("?")[0] if "@" in (s.database_url or "") else "local_file",
+        "scheduler_enabled": s.scheduler_enabled,
+        "is_geotab_configured": s.is_geotab_configured,
+        "missing_credentials": missing_geotab_credentials(s),
+    }
+
+    db_info = {"status": "error", "detail": ""}
+    row_counts: dict[str, int] = {}
+    sync_meta: dict[str, str | None] = {}
+    last_sync_logs: list[dict] = []
+    try:
+        with SessionLocal() as db:
+            for label, model in [
+                ("vehicles", Vehicle),
+                ("drivers", Driver),
+                ("trips", Trip),
+                ("gps_logs", GPSLog),
+                ("fault_codes", FaultCode),
+                ("fuel_events", FuelEvent),
+            ]:
+                row_counts[label] = db.query(model).count()
+            sync_rows = db.query(SyncMetadata).all()
+            sync_meta = {m.entity_name: m.last_sync_timestamp.isoformat() if m.last_sync_timestamp else None for m in sync_rows}
+            log_rows = (
+                db.query(SyncLog).order_by(SyncLog.started_at.desc()).limit(20).all()
+            )
+            last_sync_logs = [
+                {
+                    "entity": log.entity_name,
+                    "started_at": log.started_at.isoformat(),
+                    "finished_at": log.finished_at.isoformat() if log.finished_at else None,
+                    "status": log.status,
+                    "records": log.records_processed,
+                }
+                for log in log_rows
+            ]
+            db_info = {"status": "ok"}
+    except Exception as exc:
+        db_info = {"status": "error", "detail": str(exc)}
+
+    return JSONResponse({
+        "env": env_checks,
+        "db": db_info,
+        "row_counts": row_counts,
+        "sync_watermarks": sync_meta,
+        "recent_sync_logs": last_sync_logs,
+    })
+
+
 # ── Auth ─────────────────────────────────────────── #
 
 
