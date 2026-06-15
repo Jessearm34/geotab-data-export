@@ -66,6 +66,24 @@ def badge(text: str, variant: str = "") -> str:
     return f'<span class="badge{variant_cls}">{text}</span>'
 
 
+def _preset_days(range_key: str) -> int:
+    """Return the approximate number of days back a preset range covers."""
+    match range_key.lower():
+        case "7d":
+            return 7
+        case "30d":
+            return 30
+        case "90d":
+            return 90
+        case "ytd":
+            now = datetime.now(timezone.utc)
+            return (now - now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)).days
+        case "all":
+            return 3650
+        case _:
+            return 30
+
+
 def date_controls(
     current_range: str = "30d",
     start_date: str | None = None,
@@ -85,8 +103,10 @@ def date_controls(
         for label, key in presets
     )
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    start_val = start_date or (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     end_val = end_date or today_str
+    if start_date is None:
+        start_date = (datetime.now(timezone.utc) - timedelta(days=_preset_days(current_range))).strftime("%Y-%m-%d")
+    start_val = start_date
     return f"""
 <div class="controls">
   <span class="lbl">Period</span>

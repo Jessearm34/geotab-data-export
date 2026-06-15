@@ -1,0 +1,36 @@
+{
+  "window_since": "2026-05-13T14:02:14.623692+00:00",
+  "window_until": "2026-06-12T14:02:14.623692+00:00",
+  "db_only": true,
+  "entities": {
+    "trips": {
+      "entity": "trips",
+      "window_since": "2026-05-13T14:02:14.623692+00:00",
+      "window_until": "2026-06-12T14:02:14.623692+00:00",
+      "timestamp": "2026-06-12T14:02:14.623879+00:00",
+      "stage_1_raw_api": {
+        "status": "skipped"
+      },
+      "stage_1.5_sync_watermark": {
+        "sync_metadata": {},
+        "windowing": {
+          "entity": "trips",
+          "last_sync": null,
+          "age_seconds": null,
+          "stale": true,
+          "stale_by_seconds": null
+        }
+      },
+      "stage_2_transformed": {
+        "status": "skipped"
+      },
+      "stage_3_stored_db": {
+        "status": "error",
+        "message": "(sqlite3.OperationalError) no such table: trips\n[SQL: SELECT trips.id AS trips_id, trips.geotab_trip_id AS trips_geotab_trip_id, trips.vehicle_id AS trips_vehicle_id, trips.driver_id AS trips_driver_id, trips.start_time AS trips_start_time, trips.end_time AS trips_end_time, trips.distance_miles AS trips_distance_miles, trips.fuel_used AS trips_fuel_used, trips.idle_time AS trips_idle_time, trips.created_at AS trips_created_at, trips.updated_at AS trips_updated_at \nFROM trips]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"
+      },
+      "stage_4_analytics": {
+        "status": "skipped"
+      }
+    }
+  }
+}

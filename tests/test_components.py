@@ -6,7 +6,7 @@ date controls — verifying HTML output structure and CSS class conventions.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.dashboards.components import (
     badge,
@@ -19,6 +19,7 @@ from app.dashboards.components import (
     page_header,
     panel,
     resolve_date_range,
+    _preset_days,
 )
 from app.dashboards.kpi import Kpi
 
@@ -214,3 +215,35 @@ class TestDateControls:
     def test_hx_attributes(self):
         html = date_controls("7d", hx_target="#other")
         assert 'hx-target="#other"' in html
+
+    def test_date_picker_matches_7d_preset(self):
+        html = date_controls("7d")
+        expected = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        assert expected in html
+
+    def test_date_picker_matches_90d_preset(self):
+        html = date_controls("90d")
+        expected = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+        assert expected in html
+
+    def test_explicit_dates_override_preset(self):
+        html = date_controls("30d", start_date="2026-01-01", end_date="2026-06-01")
+        assert 'value="2026-01-01"' in html
+        assert 'value="2026-06-01"' in html
+
+
+class TestPresetDays:
+    def test_7d(self):
+        assert _preset_days("7d") == 7
+
+    def test_30d(self):
+        assert _preset_days("30d") == 30
+
+    def test_90d(self):
+        assert _preset_days("90d") == 90
+
+    def test_all(self):
+        assert _preset_days("all") == 3650
+
+    def test_default_fallback(self):
+        assert _preset_days("unknown") == 30

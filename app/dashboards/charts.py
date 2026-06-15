@@ -6,6 +6,27 @@ import plotly.graph_objects as go
 from plotly.io import to_html
 
 
+def has_meaningful_series(rows: list[dict[str, Any]] | None, value_keys: list[str] | None = None) -> bool:
+    """Check whether chart data contains any non-zero, non-null values worth rendering.
+
+    Returns False if:
+    - rows is None or empty
+    - all values for the given keys are 0 or None
+    - there is only one row and the value is 0 or None (no trend possible)
+
+    When value_keys is None, checks every key in the first row.
+    """
+    if not rows:
+        return False
+    keys = value_keys or [k for k in rows[0] if isinstance(rows[0][k], (int, float))]
+    for row in rows:
+        for k in keys:
+            val = row.get(k)
+            if val is not None and val != 0:
+                return True
+    return False
+
+
 def chart_html(fig: go.Figure) -> str:
     fig.update_layout(template="plotly_dark", margin={"l": 28, "r": 18, "t": 36, "b": 28}, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     return to_html(fig, include_plotlyjs=False, full_html=False, config={"displayModeBar": False, "responsive": True})

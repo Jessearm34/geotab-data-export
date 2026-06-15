@@ -60,7 +60,7 @@ from app.auth.security import (
     verify_admin_password,
 )
 from app.config import get_settings
-from app.dashboards.charts import bar_chart, histogram, line_chart, map_chart
+from app.dashboards.charts import bar_chart, has_meaningful_series, histogram, line_chart, map_chart
 from app.dashboards.components import (
     chart_container,
     data_table,
@@ -362,13 +362,13 @@ def executive(request: Request, range: str | None = None, start: str | None = No
         speed = analytics.speed_analysis(since, until)
         emissions = analytics.emissions_estimate(since, until)
         body = (page_header("Executive Dashboard", refreshed=datetime.now(timezone.utc))
-                + date_controls(rng, hx_target="#main-content")
+                + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                 + kpi_row(_exec_kpis(summary, idling, speed, emissions))
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
                     chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend"), "Fleet Miles Trend", dot="#38bdf8"),
                     chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend"), "Fuel Usage Trend", dot="#22c55e"),
-                    chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b"),
+                    chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b") if has_meaningful_series(utilization, ["total_miles", "utilization_percentage"]) else None,
                 ]))
                 + "</div>")
         return page(request, "Executive Dashboard", body, active_nav="/")
@@ -448,7 +448,7 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
         has_activity = any(m.get("trip_count", 0) > 0 for m in metrics)
         if not has_activity:
             body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
-                    + date_controls(rng, hx_target="#main-content")
+                    + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                     + empty_state(
                         "No driver data is available for the selected period. "
                         "Driver and trip data must be synced from Geotab before this dashboard can display driver performance metrics. "
@@ -464,7 +464,7 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
             num_cols={1, 2, 3},
         )
         body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
-                + date_controls(rng, hx_target="#main-content")
+                + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
                     chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven"), "Distance Driven", dot="#38bdf8"),
@@ -487,7 +487,7 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
         logger.info("dashboard maintenance_metrics faults=%s range=%s", fault_count, rng)
         if not fault_count and not metrics["current_faults"]:
             body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
-                    + date_controls(rng, hx_target="#main-content")
+                    + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                     + empty_state(
                         "No diagnostic fault data is available for the selected period. "
                         "Fault data is synced from Geotab when credentials are configured. "
@@ -502,7 +502,7 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
             ],
         )
         body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
-                + date_controls(rng, hx_target="#main-content")
+                + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
                     chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency"), "Fault Frequency", dot="#ef4444"),
@@ -567,14 +567,14 @@ def safety(request: Request, range: str | None = None, start: str | None = None,
             num_cols={2},
         )
         body = (page_header("Safety & Sustainability", refreshed=datetime.now(timezone.utc))
-                + date_controls(rng, hx_target="#main-content")
+                + date_controls(rng, hx_target="#main-content", start_date=since.strftime("%Y-%m-%d"), end_date=until.strftime("%Y-%m-%d"))
                 + kpi_row(kpis)
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
                     chart_container(histogram(speed["speed_distribution"], "Speed Distribution (30d)"), "Speed Distribution", dot="#38bdf8"),
-                    chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e"),
-                    chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b"),
-                    panel(driver_rows, title="Driver Safety Rankings"),
+                    chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e") if has_meaningful_series(efficiency, ["mpg", "fuel_used"]) else None,
+                    chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b") if has_meaningful_series(idling["vehicles"], ["idle_pct", "idle_seconds"]) else None,
+                    panel(driver_rows, title="Driver Safety Rankings") if has_meaningful_series(driver_safety, ["trip_count", "distance_driven"]) else None,
                     panel(fault_rows, title="Safety Exceptions (Top Fault Codes)", span_2=True),
                 ]))
                 + "</div>")
