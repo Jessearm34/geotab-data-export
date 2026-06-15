@@ -441,7 +441,8 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
     with with_db() as db:
         metrics = AnalyticsService(db).driver_metrics(since, until)
         logger.info("dashboard driver_metrics count=%s range=%s", len(metrics), rng)
-        if not metrics:
+        has_activity = any(m.get("trip_count", 0) > 0 for m in metrics)
+        if not has_activity:
             body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
                     + date_controls(rng, hx_target="#main-content")
                     + empty_state(
