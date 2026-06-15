@@ -25,7 +25,9 @@ def kpi_row(kpis: list[Kpi], active_key: str | None = None) -> str:
     return f'<div class="kpis">{cards}</div>'
 
 
-def panel(inner: str, title: str | None = None, span_2: bool = False, dot: str | None = None) -> str:
+def panel(inner: str | None, title: str | None = None, span_2: bool = False, dot: str | None = None) -> str | None:
+    if not inner:
+        return None
     span_cls = " span-2" if span_2 else ""
     if title:
         dot_html = f'<span class="dot" style="background:{dot}"></span>' if dot else ""
@@ -38,12 +40,15 @@ def empty_state(message: str = "No data available for this period.") -> str:
     return f'<div class="chart-empty">{message}</div>'
 
 
-def chart_container(chart_html: str | None, title: str | None = None, span_2: bool = False, dot: str | None = None) -> str:
-    inner = chart_html or empty_state()
-    return panel(inner, title=title, span_2=span_2, dot=dot)
+def chart_container(chart_html: str | None, title: str | None = None, span_2: bool = False, dot: str | None = None) -> str | None:
+    if chart_html is None:
+        return None
+    return panel(chart_html, title=title, span_2=span_2, dot=dot)
 
 
-def data_table(headers: list[str], rows: list[list[str]], num_cols: set[int] | None = None) -> str:
+def data_table(headers: list[str], rows: list[list[str]], num_cols: set[int] | None = None) -> str | None:
+    if not rows:
+        return None
     num_cols = num_cols or set()
     ths = "".join(f'<th class="num"{" " if i in num_cols else ""}>{h}</th>' if i in num_cols else f"<th>{h}</th>" for i, h in enumerate(headers))
     trs = "".join(

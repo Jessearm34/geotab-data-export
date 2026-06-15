@@ -129,7 +129,7 @@ class TestChartContainer:
 
     def test_empty_fallback(self):
         html = chart_container(None, title="Empty Chart")
-        assert "chart-empty" in html
+        assert html is None
 
 
 class TestDataTable:
@@ -143,7 +143,7 @@ class TestDataTable:
 
     def test_empty_rows(self):
         html = data_table(["Name"], [])
-        assert "<tr>" not in html or "</tr>" in html
+        assert html is None
 
     def test_num_cols(self):
         html = data_table(["Name", "Count"], [["A", "42"]], num_cols={1})

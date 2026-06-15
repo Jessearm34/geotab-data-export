@@ -365,9 +365,11 @@ def executive(request: Request, range: str | None = None, start: str | None = No
                 + date_controls(rng, hx_target="#main-content")
                 + kpi_row(_exec_kpis(summary, idling, speed, emissions))
                 + '<div class="grid charts">'
-                + chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend"), "Fleet Miles Trend", dot="#38bdf8")
-                + chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend"), "Fuel Usage Trend", dot="#22c55e")
-                + chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b")
+                + "".join(filter(None, [
+                    chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend"), "Fleet Miles Trend", dot="#38bdf8"),
+                    chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend"), "Fuel Usage Trend", dot="#22c55e"),
+                    chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b"),
+                ]))
                 + "</div>")
         return page(request, "Executive Dashboard", body, active_nav="/")
 
@@ -423,12 +425,14 @@ def vehicle_partial(vehicle_id: int, from_date: str | None = None, to_date: str 
             num_cols={1, 2},
         )
         return (f'<div class="grid charts">'
-                + chart_container(line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage"), "Daily Mileage", dot="#38bdf8")
-                + chart_container(histogram(detail["speed_distribution"], "Speed Distribution"), "Speed Distribution", dot="#f59e0b")
-                + chart_container(
-                    map_chart([{"vehicle": "selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points"),
-                    "Recent GPS Points", span_2=True, dot="#22c55e")
-                + panel(trips, title="Trip History", span_2=True)
+                + "".join(filter(None, [
+                    chart_container(line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage"), "Daily Mileage", dot="#38bdf8"),
+                    chart_container(histogram(detail["speed_distribution"], "Speed Distribution"), "Speed Distribution", dot="#f59e0b"),
+                    chart_container(
+                        map_chart([{"vehicle": "selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points"),
+                        "Recent GPS Points", span_2=True, dot="#22c55e"),
+                    panel(trips, title="Trip History", span_2=True),
+                ]))
                 + "</div>")
 
 
@@ -462,9 +466,11 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
         body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
                 + '<div class="grid charts">'
-                + chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven"), "Distance Driven", dot="#38bdf8")
-                + chart_container(bar_chart(metrics[:15], "name", "trip_count", "Trips Completed"), "Trips Completed", dot="#22c55e")
-                + panel(rows, title="Driver Performance", span_2=True)
+                + "".join(filter(None, [
+                    chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven"), "Distance Driven", dot="#38bdf8"),
+                    chart_container(bar_chart(metrics[:15], "name", "trip_count", "Trips Completed"), "Trips Completed", dot="#22c55e"),
+                    panel(rows, title="Driver Performance", span_2=True),
+                ]))
                 + "</div>")
         return page(request, "Driver Dashboard", body, active_nav="/drivers")
 
@@ -498,9 +504,11 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
         body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
                 + '<div class="grid charts">'
-                + chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency"), "Fault Frequency", dot="#ef4444")
-                + chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Types"), "Fault Types", dot="#f59e0b")
-                + panel(current, title="Current Faults", span_2=True)
+                + "".join(filter(None, [
+                    chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency"), "Fault Frequency", dot="#ef4444"),
+                    chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Types"), "Fault Types", dot="#f59e0b"),
+                    panel(current, title="Current Faults", span_2=True),
+                ]))
                 + "</div>")
         return page(request, "Maintenance Dashboard", body, active_nav="/maintenance")
 
@@ -542,9 +550,6 @@ def safety(request: Request, range: str | None = None, start: str | None = None,
         faults = analytics.maintenance_metrics(since, until)
 
         kpis = _safety_kpis(speed, idling, efficiency, emissions, faults)
-        speed_hist = chart_container(histogram(speed["speed_distribution"], "Speed Distribution (30d)"), "Speed Distribution", dot="#38bdf8")
-        mpg_chart = chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e")
-        idle_chart = chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b")
         driver_rows = data_table(
             ["Driver", "Trips", "Miles", "Idle %", "Score"],
             [
@@ -565,9 +570,13 @@ def safety(request: Request, range: str | None = None, start: str | None = None,
                 + date_controls(rng, hx_target="#main-content")
                 + kpi_row(kpis)
                 + '<div class="grid charts">'
-                + speed_hist + mpg_chart + idle_chart
-                + panel(driver_rows, title="Driver Safety Rankings")
-                + panel(fault_rows, title="Safety Exceptions (Top Fault Codes)", span_2=True)
+                + "".join(filter(None, [
+                    chart_container(histogram(speed["speed_distribution"], "Speed Distribution (30d)"), "Speed Distribution", dot="#38bdf8"),
+                    chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e"),
+                    chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b"),
+                    panel(driver_rows, title="Driver Safety Rankings"),
+                    panel(fault_rows, title="Safety Exceptions (Top Fault Codes)", span_2=True),
+                ]))
                 + "</div>")
         return page(request, "Safety & Sustainability", body, active_nav="/safety")
 
