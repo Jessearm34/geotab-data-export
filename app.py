@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 from datetime import datetime, timedelta, timezone
+import os
 from hashlib import pbkdf2_hmac
 from hmac import compare_digest
 from os import getenv
@@ -89,14 +90,14 @@ app, rt = fast_app(
         Script(src=PLOTLY_CDN),
         STYLE,
     ),
-    secret_key=getenv("FASTHTML_SECRET_KEY", "change-this-secret"),
+    secret_key=os.getenv("SESSION_SECRET", "change-this-secret"),
 )
 
 # ── Auth ───────────────────────────────────────────────────────────────────
 
-AUTH_DOMAIN = getenv("DASHBOARD_LOGIN_DOMAIN", "").strip().lower()
-AUTH_PASSWORD = getenv("DASHBOARD_LOGIN_PASSWORD")
-AUTH_PASSWORD_HASH = getenv("DASHBOARD_LOGIN_PASSWORD_HASH", "").strip()
+AUTH_PASSWORD = os.getenv("ADMIN_PASSWORD")
+AUTH_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
+AUTH_DOMAIN = os.getenv("DASHBOARD_LOGIN_DOMAIN", "").strip().lower()
 
 def verify_password(password: str) -> bool:
     if not AUTH_PASSWORD and not AUTH_PASSWORD_HASH:
