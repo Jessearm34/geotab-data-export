@@ -496,11 +496,19 @@ def logout(req):
 
 @rt("/health")
 def health():
-    from database import engine
-    from sqlalchemy import text
+    from database import engine, SessionLocal
+    from models import Vehicle, Trip, Driver
+    from sqlalchemy import text, select, func
     try:
-        with engine.connect() as c: c.execute(text("SELECT 1"))
-        return {"status": "ok", "db": "connected"}
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
+        db = SessionLocal()
+        vc = db.scalar(select(func.count(Vehicle.id)))
+        tc = db.scalar(select(func.count(Trip.id)))
+        dc = db.scalar(select(func.count(Driver.id)))
+        db.close()
+        return {"status": "ok", "db": "connected",
+                "vehicles": vc or 0, "trips": tc or 0, "drivers": dc or 0}
     except Exception as e:
         return {"status": "error", "db": str(e)}
 
