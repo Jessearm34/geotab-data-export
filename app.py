@@ -132,24 +132,29 @@ def require_login(req):
 
 # ── Sections ───────────────────────────────────────────────────────────────
 
-SECTIONS = [
-    ("fleet", "Fleet Overview", "📊"),
-    ("vehicles", "Vehicles", "🚛"),
-    ("maintenance", "Maintenance", "🔧"),
-    ("map", "Fleet Map", "🗺️"),
-]
-
-# Drivers section shown only if driver data exists
 def has_drivers(data: dict) -> bool:
     return len(data.get("drivers", [])) > 0 and any(d.get("distance_driven", 0) > 0 for d in data["drivers"])
+
+def has_faults(data: dict) -> bool:
+    faults = data.get("faults", {})
+    freq = faults.get("fault_frequency", [])
+    # Only show if there are meaningful fault codes (not all NoFailureModelId)
+    if not freq:
+        return False
+    for f in freq:
+        code = f.get("fault_code", "")
+        if code and code != "NoFailureModelId":
+            return True
+    return False
 
 def active_sections(data: dict) -> list:
     sections = [("fleet", "Fleet Overview", "📊"),
                 ("vehicles", "Vehicles", "🚛")]
     if has_drivers(data):
         sections.append(("drivers", "Drivers", "👤"))
-    sections.extend([("maintenance", "Maintenance", "🔧"),
-                     ("map", "Fleet Map", "🗺️")])
+    if has_faults(data):
+        sections.append(("maintenance", "Maintenance", "🔧"))
+    sections.extend([("map", "Fleet Map", "🗺️")])
     return sections
 SWAP = dict(hx_target="#app", hx_swap="outerHTML", hx_indicator="#loading")
 ACCENT = "#2563eb"
@@ -435,6 +440,10 @@ def get_state(req):
 
 def app_shell(state):
     data = load_data()
+    # Redirect to fleet if the requested section has no data
+    active = {k for k, _, _ in active_sections(data)}
+    if state["section"] not in active:
+        state["section"] = "fleet"
     return Div(
         sidebar(state, data),
         Div(header(), kpi_row(data), section_body(state, data), cls="main"),
