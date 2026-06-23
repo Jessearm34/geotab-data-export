@@ -175,7 +175,7 @@ def url(state, **over):
 
 def load_data():
     now = datetime.now(timezone.utc)
-    since = now - timedelta(days=30)
+    since = now - timedelta(days=365)
     until = now
     db = SessionLocal()
     try:
