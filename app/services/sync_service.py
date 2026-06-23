@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.geotab.client import GeotabClient, iso_geotab
 from app.geotab.transform import driver_from_geotab, fault_from_geotab, gps_log_from_geotab, trip_from_geotab, vehicle_from_geotab
-from app.models import Driver, FaultCode, FuelEvent, GPSLog, SyncLog, SyncMetadata, Trip, Vehicle
+from app.models import Driver, FaultCode, GPSLog, SyncLog, SyncMetadata, Trip, Vehicle
 from app.schemas.domain import DriverIn, FaultCodeIn, GPSLogIn, TripIn, VehicleIn
 
 logger = logging.getLogger(__name__)
@@ -292,7 +292,6 @@ class SyncService:
             ("trips", self._sync_trips),
             ("gps_logs", self._sync_logs),
             ("faults", self._sync_faults),
-            ("fuel_events", self._sync_fuel_events),
         ]:
             try:
                 results[name] = self._run_logged(name, func)

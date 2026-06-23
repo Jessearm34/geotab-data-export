@@ -72,6 +72,7 @@ from app.dashboards.components import (
     resolve_date_range,
 )
 from app.dashboards.kpi import Kpi
+from app.data_refining.comparison import compute_delta, prior_period
 from app.database.session import SessionLocal
 from app.jobs.scheduler import start_scheduler
 from app.logging_config import configure_logging
@@ -147,7 +148,7 @@ def page(request: Request, title: str, body: str, active_nav: str | None = None)
         ("/fleet-map", "Fleet Map"),
     ]
     nav_html = "".join(
-        f'<a href="{path}"{" class=\"active\"" if path == active_nav else ""}>{label}</a>'
+        f'<a href="{path}"{" class=active" if path == active_nav else ""}>{label}</a>'
         for path, label in nav_links
     )
     html = f"""<!doctype html>
@@ -198,30 +199,50 @@ def with_db() -> SessionLocal:
 
 # ── Helpers ──────────────────────────────────────── #
 
-def _safety_kpis(speed: dict, idling: dict, efficiency: list, emissions: dict, faults: dict) -> list[Kpi]:
+def _safety_kpis(speed: dict, idling: dict, efficiency: list, emissions: dict, faults: dict, prior_speed: dict | None = None, prior_idling: dict | None = None, prior_efficiency: list | None = None, prior_emissions: dict | None = None, prior_faults: dict | None = None) -> list[Kpi]:
     top_mpg = efficiency[0]["mpg"] if efficiency else None
+    prior_top_mpg = prior_efficiency[0]["mpg"] if prior_efficiency else None
     return [
-        Kpi(key="avg_speed", label="Avg Speed", value=speed["avg_speed"], unit="mph"),
-        Kpi(key="max_speed", label="Max Speed", value=speed["max_speed"], unit="mph"),
-        Kpi(key="speeding_pct", label="Speeding %", value=speed["speeding_pct"], unit="%"),
-        Kpi(key="idle_hours", label="Idle Time", value=idling["total_idle_hours"], unit="hours"),
-        Kpi(key="fleet_mpg", label="Fleet MPG", value=top_mpg, unit="mpg"),
-        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons"),
-        Kpi(key="fuel_gal", label="Fuel Used", value=emissions["total_fuel_gal"], unit="gal"),
-        Kpi(key="safety_events", label="Fault Events", value=faults["open_fault_counts"]),
+        Kpi(key="avg_speed", label="Avg Speed", value=speed["avg_speed"], unit="mph",
+            delta=compute_delta(speed["avg_speed"], prior_speed["avg_speed"] if prior_speed else None)),
+        Kpi(key="max_speed", label="Max Speed", value=speed["max_speed"], unit="mph",
+            delta=compute_delta(speed["max_speed"], prior_speed["max_speed"] if prior_speed else None), delta_good_when_up=False),
+        Kpi(key="speeding_pct", label="Speeding %", value=speed["speeding_pct"], unit="%",
+            delta=compute_delta(speed["speeding_pct"], prior_speed["speeding_pct"] if prior_speed else None), delta_good_when_up=False),
+        Kpi(key="idle_hours", label="Idle Time", value=idling["total_idle_hours"], unit="hours",
+            delta=compute_delta(idling["total_idle_hours"], prior_idling["total_idle_hours"] if prior_idling else None), delta_good_when_up=False),
+        Kpi(key="fleet_mpg", label="Fleet MPG", value=top_mpg, unit="mpg",
+            delta=compute_delta(top_mpg, prior_top_mpg)),
+        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons",
+            delta=compute_delta(emissions["co2_tons"], prior_emissions["co2_tons"] if prior_emissions else None), delta_good_when_up=False),
+        Kpi(key="fuel_gal", label="Fuel Used", value=emissions["total_fuel_gal"], unit="gal",
+            delta=compute_delta(emissions["total_fuel_gal"], prior_emissions["total_fuel_gal"] if prior_emissions else None), delta_good_when_up=False),
+        Kpi(key="safety_events", label="Fault Events", value=faults["open_fault_counts"],
+            delta=compute_delta(faults["open_fault_counts"], prior_faults["open_fault_counts"] if prior_faults else None), delta_good_when_up=False),
     ]
 
 
-def _exec_kpis(summary: Any, idling: dict, speed: dict, emissions: dict) -> list[Kpi]:
+def _exec_kpis(summary: Any, idling: dict, speed: dict, emissions: dict, prior_summary: Any = None, prior_idling: dict | None = None, prior_speed: dict | None = None, prior_emissions: dict | None = None) -> list[Kpi]:
+    def delta(curr: float | int | None, prior: float | int | None) -> float | None:
+        return compute_delta(curr, prior)
+
     return [
-        Kpi(key="total_vehicles", label="Total Vehicles", value=summary.total_vehicles),
-        Kpi(key="active_vehicles", label="Active Vehicles", value=summary.active_vehicles),
-        Kpi(key="fleet_miles", label="Fleet Miles", value=summary.total_fleet_miles, unit="miles"),
-        Kpi(key="avg_mpg", label="Avg MPG", value=summary.average_mpg, unit="mpg"),
-        Kpi(key="idle_pct", label="Idle %", value=idling["idle_pct"], unit="%"),
-        Kpi(key="speeding", label="Speeding Incidents", value=speed["speeding_count"]),
-        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons"),
-        Kpi(key="fuel", label="Fuel Used", value=summary.total_fuel_consumed, unit="gal"),
+        Kpi(key="total_vehicles", label="Total Vehicles", value=summary.total_vehicles,
+            delta=delta(summary.total_vehicles, prior_summary.total_vehicles if prior_summary else None)),
+        Kpi(key="active_vehicles", label="Active Vehicles", value=summary.active_vehicles,
+            delta=delta(summary.active_vehicles, prior_summary.active_vehicles if prior_summary else None)),
+        Kpi(key="fleet_miles", label="Fleet Miles", value=summary.total_fleet_miles, unit="miles",
+            delta=delta(summary.total_fleet_miles, prior_summary.total_fleet_miles if prior_summary else None)),
+        Kpi(key="avg_mpg", label="Avg MPG", value=summary.average_mpg, unit="mpg",
+            delta=delta(summary.average_mpg, prior_summary.average_mpg if prior_summary else None)),
+        Kpi(key="idle_pct", label="Idle %", value=idling["idle_pct"], unit="%",
+            delta=delta(idling["idle_pct"], prior_idling["idle_pct"] if prior_idling else None), delta_good_when_up=False),
+        Kpi(key="speeding", label="Speeding Incidents", value=speed["speeding_count"],
+            delta=delta(speed["speeding_count"], prior_speed["speeding_count"] if prior_speed else None), delta_good_when_up=False),
+        Kpi(key="co2", label="CO₂ Emissions", value=emissions["co2_tons"], unit="tons",
+            delta=delta(emissions["co2_tons"], prior_emissions["co2_tons"] if prior_emissions else None), delta_good_when_up=False),
+        Kpi(key="fuel", label="Fuel Used", value=summary.total_fuel_consumed, unit="gal",
+            delta=delta(summary.total_fuel_consumed, prior_summary.total_fuel_consumed if prior_summary else None), delta_good_when_up=False),
     ]
 
 
@@ -361,15 +382,42 @@ def executive(request: Request, range: str | None = None, start: str | None = No
         idling = analytics.idling_summary(since, until)
         speed = analytics.speed_analysis(since, until)
         emissions = analytics.emissions_estimate(since, until)
+
+        # Compute prior-period deltas
+        prior_since, prior_until = prior_period(since, until)
+        prior_summary = analytics.fleet_summary(prior_since, prior_until)
+        prior_idling = analytics.idling_summary(prior_since, prior_until)
+        prior_speed = analytics.speed_analysis(prior_since, prior_until)
+        prior_emissions = analytics.emissions_estimate(prior_since, prior_until)
+
+        # Empty state: no trips in range
+        has_trips = bool(trends)
+        if not has_trips:
+            body = (page_header("Executive Dashboard", refreshed=datetime.now(timezone.utc))
+                    + date_controls(rng, hx_target="#main-content")
+                    + kpi_row(_exec_kpis(summary, idling, speed, emissions, prior_summary, prior_idling, prior_speed, prior_emissions))
+                    + empty_state("No trips in selected date range. Try adjusting the date filter to include periods with fleet activity."))
+            return page(request, "Executive Dashboard", body, active_nav="/")
+
+        # 2-row grid: KPI cards top, 2 charts + table bottom
+        from app.dashboards.charts import COLORS
+        utilization_table = data_table(
+            ["Vehicle", "Miles", "Hours", "Utilization %"],
+            [[r["label"], str(r["total_miles"]), str(r["hours_driven"]), f'{r["utilization_percentage"]}%'] for r in utilization],
+            num_cols={1, 2, 3},
+        )
         body = (page_header("Executive Dashboard", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
-                + kpi_row(_exec_kpis(summary, idling, speed, emissions))
+                + kpi_row(_exec_kpis(summary, idling, speed, emissions, prior_summary, prior_idling, prior_speed, prior_emissions))
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
-                    chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend"), "Fleet Miles Trend", dot="#38bdf8"),
-                    chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend"), "Fuel Usage Trend", dot="#22c55e"),
-                    chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking"), "Vehicle Utilization Ranking", span_2=True, dot="#f59e0b"),
+                    chart_container(line_chart(trends, "day", "mileage", "Fleet Miles Trend", color=COLORS["primary"]), "Fleet Miles Trend", dot=COLORS["primary"]),
+                    chart_container(line_chart(trends, "day", "fuel", "Fuel Usage Trend", color=COLORS["success"]), "Fuel Usage Trend", dot=COLORS["success"]),
+                    chart_container(bar_chart(utilization, "label", "utilization_percentage", "Vehicle Utilization Ranking", color=COLORS["warning"]), "Vehicle Utilization Ranking", span_2=True, dot=COLORS["warning"]),
                 ]))
+                + "</div>"
+                + '<div class="grid charts mt">'
+                + panel(utilization_table, title="Vehicle Utilization Details", span_2=True)
                 + "</div>")
         return page(request, "Executive Dashboard", body, active_nav="/")
 
@@ -392,7 +440,15 @@ def vehicles(request: Request) -> HTMLResponse:
             return page(request, "Vehicle Dashboard", body, active_nav="/vehicles")
         selected = vehicle_list[0].id if vehicle_list else 0
         options = "".join(f'<option value="{v.id}">{v.license_plate or v.vin or v.geotab_id}</option>' for v in vehicle_list)
+        # Build vehicle info card
+        v = vehicle_list[0]
+        vehicle_info = f"""<div class="vehicle-info">
+          <h3>{v.license_plate or v.vin or v.geotab_id}</h3>
+          <p>Make: {v.make or 'Unknown'} · Model: {v.model or 'Unknown'} · Year: {v.year or 'Unknown'}</p>
+          <p>VIN: {v.vin or 'N/A'}</p>
+        </div>"""
         body = (page_header("Vehicle Dashboard")
+                + vehicle_info
                 + f"""
 <form class="filters" hx-get="/partials/vehicle" hx-target="#vehicle-content" hx-indicator=".htmx-indicator">
 <label>Vehicle<select name="vehicle_id">{options}</select></label>
@@ -415,23 +471,25 @@ def vehicle_partial(vehicle_id: int, from_date: str | None = None, to_date: str 
     since = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc) if from_date else datetime.now(timezone.utc) - timedelta(days=30)
     until = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc) + timedelta(days=1) if to_date else datetime.now(timezone.utc)
     with with_db() as db:
+        from app.dashboards.charts import COLORS
         detail = AnalyticsService(db).vehicle_detail(vehicle_id, since, until)
-        trips = data_table(
-            ["Date", "Miles", "Fuel"],
+        trips_table = data_table(
+            ["Date", "Miles", "Fuel (est)"],
             [
                 [row["start_time"][:10], str(row["distance_miles"]), str(row["fuel_used"])]
-                for row in detail["trip_history"][:100]
+                for row in detail["trip_history"][:20]
             ],
             num_cols={1, 2},
         )
+        # 2x2 grid: daily mileage, speed histogram, map, trip history
         return (f'<div class="grid charts">'
                 + "".join(filter(None, [
-                    chart_container(line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage"), "Daily Mileage", dot="#38bdf8"),
-                    chart_container(histogram(detail["speed_distribution"], "Speed Distribution"), "Speed Distribution", dot="#f59e0b"),
+                    chart_container(line_chart(detail["daily_mileage"], "day", "miles", "Daily Mileage", color=COLORS["primary"]), "Daily Mileage", dot=COLORS["primary"]),
+                    chart_container(histogram(detail["speed_distribution"], "Speed Distribution", color=COLORS["warning"]), "Speed Distribution", dot=COLORS["warning"]),
                     chart_container(
-                        map_chart([{"vehicle": "selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points"),
-                        "Recent GPS Points", span_2=True, dot="#22c55e"),
-                    panel(trips, title="Trip History", span_2=True),
+                        map_chart([{"vehicle": "Selected", "latitude": p["lat"], "longitude": p["lon"], "status": "moving" if p["speed"] > 1 else "stopped"} for p in detail["gps_points"]], "Recent GPS Points"),
+                        "Recent GPS Points", dot=COLORS["success"]),
+                    panel(trips_table or empty_state("No trips in selected date range."), title="Trip History"),
                 ]))
                 + "</div>")
 
@@ -443,18 +501,30 @@ def vehicle_partial(vehicle_id: int, from_date: str | None = None, to_date: str 
 def drivers(request: Request, range: str | None = None, start: str | None = None, end: str | None = None) -> HTMLResponse:
     since, until, rng = resolve_date_range(range, start, end)
     with with_db() as db:
-        metrics = AnalyticsService(db).driver_metrics(since, until)
+        analytics = AnalyticsService(db)
+        metrics = analytics.driver_metrics(since, until)
         logger.info("dashboard driver_metrics count=%s range=%s", len(metrics), rng)
         has_activity = any(m.get("trip_count", 0) > 0 for m in metrics)
         if not has_activity:
             body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
                     + date_controls(rng, hx_target="#main-content")
                     + empty_state(
-                        "No driver data is available for the selected period. "
-                        "Driver and trip data must be synced from Geotab before this dashboard can display driver performance metrics. "
-                        "This happens automatically when Geotab credentials are configured and the scheduler runs.",
+                        "No trips in selected date range. "
+                        "Try adjusting the date filter to include periods with driver activity.",
                     ))
             return page(request, "Driver Dashboard", body, active_nav="/drivers")
+        # KPI summary row
+        total_drivers = len(metrics)
+        active_drivers = sum(1 for m in metrics if m["trip_count"] > 0)
+        total_distance = sum(m["distance_driven"] for m in metrics)
+        total_trips = sum(m["trip_count"] for m in metrics)
+        driver_kpis = [
+            Kpi(key="total_vehicles", label="Total Drivers", value=total_drivers),
+            Kpi(key="active_vehicles", label="Active Drivers", value=active_drivers),
+            Kpi(key="fleet_miles", label="Total Distance", value=total_distance, unit="miles"),
+            Kpi(key="avg_mpg", label="Total Trips", value=total_trips),
+        ]
+        from app.dashboards.charts import COLORS
         rows = data_table(
             ["Driver", "Trips", "Distance", "Avg Trip"],
             [
@@ -465,10 +535,11 @@ def drivers(request: Request, range: str | None = None, start: str | None = None
         )
         body = (page_header("Driver Dashboard", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
+                + kpi_row(driver_kpis)
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
-                    chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven"), "Distance Driven", dot="#38bdf8"),
-                    chart_container(bar_chart(metrics[:15], "name", "trip_count", "Trips Completed"), "Trips Completed", dot="#22c55e"),
+                    chart_container(bar_chart(metrics[:15], "name", "distance_driven", "Distance Driven", color=COLORS["primary"]), "Distance Driven", dot=COLORS["primary"]),
+                    chart_container(bar_chart(metrics[:15], "name", "trip_count", "Trips Completed", color=COLORS["success"]), "Trips Completed", dot=COLORS["success"]),
                     panel(rows, title="Driver Performance", span_2=True),
                 ]))
                 + "</div>")
@@ -489,11 +560,11 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
             body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
                     + date_controls(rng, hx_target="#main-content")
                     + empty_state(
-                        "No diagnostic fault data is available for the selected period. "
-                        "Fault data is synced from Geotab when credentials are configured. "
-                        "If credentials are set, check that vehicles have active diagnostic trouble codes.",
+                        "No diagnostic faults in selected date range. "
+                        "Vehicle health data is synced from Geotab when credentials are configured.",
                     ))
             return page(request, "Maintenance Dashboard", body, active_nav="/maintenance")
+        from app.dashboards.charts import COLORS
         current = data_table(
             ["Vehicle", "Date", "Code", "Description"],
             [
@@ -501,12 +572,17 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
                 for row in metrics["current_faults"]
             ],
         )
+        fault_freq_table = data_table(
+            ["Fault Code", "Count"],
+            [[row["fault_code"], str(row["count"])] for row in metrics["fault_frequency"][:20]],
+            num_cols={1},
+        )
         body = (page_header("Maintenance Dashboard", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
-                    chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency"), "Fault Frequency", dot="#ef4444"),
-                    chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Types"), "Fault Types", dot="#f59e0b"),
+                    chart_container(bar_chart(metrics["fault_frequency"][:15], "fault_code", "count", "Fault Frequency", color=COLORS["danger"]), "Fault Frequency", dot=COLORS["danger"]),
+                    panel(fault_freq_table or empty_state("No fault data."), title="Fault Code Breakdown"),
                     panel(current, title="Current Faults", span_2=True),
                 ]))
                 + "</div>")
@@ -519,18 +595,30 @@ def maintenance(request: Request, range: str | None = None, start: str | None = 
 @rt("/fleet-map")
 def fleet_map(request: Request) -> HTMLResponse:
     with with_db() as db:
-        locations = AnalyticsService(db).latest_locations()
+        locations = AnalyticsService(db).latest_locations(max_age_days=365)
         logger.info("dashboard fleet_map locations=%s", len(locations))
         if not locations:
             body = (page_header("Fleet Map")
                     + empty_state(
-                        "No vehicle location data is available. "
+                        "No vehicle location data available. "
                         "GPS log data must be synced from Geotab before vehicle positions can appear on the map. "
                         "This happens automatically when Geotab credentials are configured and the scheduler runs.",
                     ))
             return page(request, "Fleet Map", body, active_nav="/fleet-map")
+        from app.dashboards.charts import COLORS
+        # Build vehicle list sidebar
+        vehicle_items = "".join(
+            f'<div class="fleet-list-item"><span class="status-dot {loc["status"]}"></span><span class="vehicle-label">{loc["vehicle"]}</span><span class="vehicle-speed">{loc["speed"]:.0f} mph</span></div>'
+            for loc in locations
+        )
+        map_panel = panel(map_chart(locations, "Live Fleet Positions"), title="Live Fleet Positions", dot=COLORS["primary"])
+        list_panel = panel(
+            f'<div class="fleet-list">{vehicle_items}</div>',
+            title=f"Vehicles ({len(locations)})",
+            dot=COLORS["success"]
+        )
         body = (page_header("Fleet Map")
-                + panel(map_chart(locations, "Latest Vehicle Locations"), title="Latest Vehicle Locations", dot="#38bdf8"))
+                + f'<div class="fleet-map-grid"><div class="map-panel">{map_panel}</div>{list_panel}</div>')
         return page(request, "Fleet Map", body, active_nav="/fleet-map")
 
 
@@ -549,7 +637,15 @@ def safety(request: Request, range: str | None = None, start: str | None = None,
         driver_safety = analytics.driver_safety_rankings(since, until)[:10]
         faults = analytics.maintenance_metrics(since, until)
 
-        kpis = _safety_kpis(speed, idling, efficiency, emissions, faults)
+        # Compute prior-period deltas
+        prior_since, prior_until = prior_period(since, until)
+        prior_speed = analytics.speed_analysis(prior_since, prior_until)
+        prior_efficiency = analytics.fuel_efficiency(prior_since, prior_until)
+        prior_idling = analytics.idling_summary(prior_since, prior_until)
+        prior_emissions = analytics.emissions_estimate(prior_since, prior_until)
+        prior_faults = analytics.maintenance_metrics(prior_since, prior_until)
+
+        kpis = _safety_kpis(speed, idling, efficiency, emissions, faults, prior_speed, prior_idling, prior_efficiency, prior_emissions, prior_faults)
         driver_rows = data_table(
             ["Driver", "Trips", "Miles", "Idle %", "Score"],
             [
@@ -566,17 +662,20 @@ def safety(request: Request, range: str | None = None, start: str | None = None,
             ],
             num_cols={2},
         )
+        from app.dashboards.charts import COLORS
         body = (page_header("Safety & Sustainability", refreshed=datetime.now(timezone.utc))
                 + date_controls(rng, hx_target="#main-content")
                 + kpi_row(kpis)
                 + '<div class="grid charts">'
                 + "".join(filter(None, [
-                    chart_container(histogram(speed["speed_distribution"], "Speed Distribution (30d)"), "Speed Distribution", dot="#38bdf8"),
-                    chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)"), "Fuel Economy (MPG)", dot="#22c55e"),
-                    chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle"), "Idle Time % by Vehicle", dot="#f59e0b"),
-                    panel(driver_rows, title="Driver Safety Rankings"),
-                    panel(fault_rows, title="Safety Exceptions (Top Fault Codes)", span_2=True),
+                    chart_container(histogram(speed["speed_distribution"], "Speed Distribution", color=COLORS["warning"]), "Speed Distribution", dot=COLORS["warning"]),
+                    chart_container(bar_chart(efficiency, "label", "mpg", "Fuel Economy (MPG)", color=COLORS["success"]), "Fuel Economy (MPG)", dot=COLORS["success"]),
+                    chart_container(bar_chart(idling["vehicles"], "label", "idle_pct", "Idle Time % by Vehicle", color=COLORS["danger"]), "Idle Time % by Vehicle", dot=COLORS["danger"]),
                 ]))
+                + "</div>"
+                + '<div class="grid charts mt">'
+                + panel(driver_rows, title="Driver Safety Rankings")
+                + panel(fault_rows, title="Safety Exceptions (Top Fault Codes)")
                 + "</div>")
         return page(request, "Safety & Sustainability", body, active_nav="/safety")
 

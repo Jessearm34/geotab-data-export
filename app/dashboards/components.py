@@ -11,13 +11,33 @@ from typing import Any
 
 from app.dashboards.kpi import Kpi, format_delta, format_kpi_value
 
+# KPI type-to-css-class mapping
+_KPI_TYPE_MAP: dict[str, str] = {
+    "total_vehicles": "type-fleet",
+    "active_vehicles": "type-fleet",
+    "fleet_miles": "type-fleet",
+    "avg_mpg": "type-efficiency",
+    "fleet_mpg": "type-efficiency",
+    "fuel": "type-efficiency",
+    "fuel_gal": "type-efficiency",
+    "idle_pct": "type-safety",
+    "idle_hours": "type-safety",
+    "speeding": "type-safety",
+    "speeding_pct": "type-safety",
+    "avg_speed": "type-efficiency",
+    "max_speed": "type-alert",
+    "co2": "type-alert",
+    "safety_events": "type-alert",
+}
+
 
 def kpi_card(kpi: Kpi, active: bool = False) -> str:
     hint_html = f'<div class="k-hint">{kpi.hint}</div>' if kpi.hint else ""
     delta_html = format_delta(kpi.delta, kpi.delta_good_when_up)
     active_cls = " active" if active else ""
+    type_cls = _KPI_TYPE_MAP.get(kpi.key, "type-fleet")
     value_html = format_kpi_value(kpi.value, kpi.unit)
-    return f'<div class="kpi{active_cls}"><div class="k-label">{kpi.label}</div><div class="k-value">{value_html}</div>{delta_html}{hint_html}</div>'
+    return f'<div class="kpi {type_cls}{active_cls}"><div class="k-label">{kpi.label}</div><div class="k-value">{value_html}</div>{delta_html}{hint_html}</div>'
 
 
 def kpi_row(kpis: list[Kpi], active_key: str | None = None) -> str:
@@ -76,7 +96,9 @@ def date_controls(
         ("7d", "7d"),
         ("30d", "30d"),
         ("90d", "90d"),
+        ("Month", "month"),
         ("YTD", "ytd"),
+        ("Year", "year"),
         ("All", "all"),
     ]
     preset_html = "".join(
@@ -107,7 +129,6 @@ def date_controls(
 
 def resolve_date_range(range_str: str | None, start_str: str | None, end_str: str | None) -> tuple[datetime, datetime, str]:
     now = datetime.now(timezone.utc)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     if start_str and end_str:
         try:
             s = datetime.fromisoformat(start_str).replace(tzinfo=timezone.utc)
@@ -122,6 +143,10 @@ def resolve_date_range(range_str: str | None, start_str: str | None, end_str: st
             return now - timedelta(days=90), now, "90d"
         case "ytd":
             return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0), now, "ytd"
+        case "month":
+            return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), now, "month"
+        case "year":
+            return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0), now, "year"
         case "all":
             return now - timedelta(days=3650), now, "all"
         case _:

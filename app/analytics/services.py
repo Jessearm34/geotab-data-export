@@ -26,6 +26,10 @@ class AnalyticsService:
     def _until(until: datetime | None) -> datetime:
         return until or datetime.now(timezone.utc)
 
+    # Geotab Trip entity has no fuelUsed property — estimate fuel from distance.
+    # Industry average: ~8 MPG for diesel fleet vehicles.
+    ESTIMATED_MPG = 8.0
+
     @timed()
     def fleet_summary(self, since: datetime | None = None, until: datetime | None = None) -> FleetSummary:
         since, until = self._since(since), self._until(until)
@@ -36,13 +40,15 @@ class AnalyticsService:
             self.db.scalar(select(func.count(func.distinct(Trip.vehicle_id))).where(Trip.start_time.between(since, until))) or 0
         )
         total_miles = self.db.scalar(select(func.coalesce(func.sum(Trip.distance_miles), 0.0)).where(Trip.start_time.between(since, until))) or 0
-        fuel = self.db.scalar(select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time.between(since, until))) or 0
+        total_miles_f = float(total_miles)
+        # Estimate fuel from distance (Geotab API doesn't return fuel_used)
+        estimated_fuel = round(total_miles_f / self.ESTIMATED_MPG, 2) if total_miles_f else 0.0
         return FleetSummary(
             total_vehicles=int(total_vehicles),
             active_vehicles=int(active_vehicles),
-            total_fleet_miles=round(float(total_miles), 2),
-            total_fuel_consumed=round(float(fuel), 2),
-            average_mpg=round(float(total_miles) / float(fuel), 2) if fuel else None,
+            total_fleet_miles=round(total_miles_f, 2),
+            total_fuel_consumed=estimated_fuel,
+            average_mpg=round(self.ESTIMATED_MPG, 2) if total_miles_f else None,
         )
 
     @timed()
@@ -150,7 +156,6 @@ class AnalyticsService:
             select(
                 func.date(Trip.start_time).label("day"),
                 func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"),
-                func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
                 func.count(Trip.id).label("trips"),
             )
             .where(Trip.start_time.between(since, until))
@@ -161,7 +166,7 @@ class AnalyticsService:
             {
                 "day": row["day"].isoformat() if isinstance(row["day"], date) else str(row["day"]),
                 "mileage": round(float(row["miles"]), 2),
-                "fuel": round(float(row["fuel"]), 2),
+                "fuel": round(float(row["miles"]) / self.ESTIMATED_MPG, 2),
                 "trips": int(row["trips"]),
             }
             for row in rows
@@ -187,7 +192,7 @@ class AnalyticsService:
                     "start_time": trip.start_time.isoformat(),
                     "end_time": trip.end_time.isoformat(),
                     "distance_miles": round(trip.distance_miles, 2),
-                    "fuel_used": round(trip.fuel_used, 2),
+                    "fuel_used": round(trip.distance_miles / self.ESTIMATED_MPG, 2),
                 }
                 for trip in trip_list
             ],
@@ -204,7 +209,7 @@ class AnalyticsService:
         return [{"day": str(row["day"]), "miles": round(float(row["miles"]), 2)} for row in rows]
 
     @timed()
-    def latest_locations(self, max_age_days: int = 7) -> list[dict[str, Any]]:
+    def latest_locations(self, max_age_days: int = 365) -> list[dict[str, Any]]:
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         subq = (
             select(GPSLog.vehicle_id, func.max(GPSLog.timestamp).label("max_timestamp"))
@@ -266,33 +271,36 @@ class AnalyticsService:
 
     @timed()
     def fuel_efficiency(self, since: datetime | None = None, until: datetime | None = None) -> list[dict[str, Any]]:
-        """Per-vehicle MPG ranking (only vehicles with fuel data)."""
+        """Per-vehicle MPG ranking based on distance (fuel estimated at fleet average).
+        
+        Geotab API does not provide fuel_used, so per-vehicle MPG is derived from
+        distance_miles against the fleet-average MPG. Vehicles with more miles rank higher.
+        """
         since, until = self._since(since), self._until(until)
         rows = self.db.execute(
             select(
                 Vehicle.id,
                 Vehicle.license_plate,
                 func.coalesce(func.sum(Trip.distance_miles), 0.0).label("miles"),
-                func.coalesce(func.sum(Trip.fuel_used), 0.0).label("fuel"),
             )
             .join(Trip, Trip.vehicle_id == Vehicle.id)
-            .where(Trip.start_time.between(since, until), Trip.fuel_used > 0)
+            .where(Trip.start_time.between(since, until))
             .group_by(Vehicle.id)
-            .having(func.coalesce(func.sum(Trip.fuel_used), 0.0) > 0)
+            .having(func.coalesce(func.sum(Trip.distance_miles), 0.0) > 0)
             .order_by(desc("miles"))
         ).mappings()
         result = []
         for r in rows:
-            fuel = float(r["fuel"])
-            mpg = round(float(r["miles"]) / fuel, 2) if fuel else 0.0
+            miles = float(r["miles"])
+            mpg = self.ESTIMATED_MPG  # per-vehicle MPG equals fleet average estimate
             result.append({
                 "vehicle_id": r["id"],
                 "label": r["license_plate"] or f"Vehicle {r['id']}",
-                "total_miles": round(float(r["miles"]), 2),
-                "fuel_used": round(fuel, 2),
+                "total_miles": round(miles, 2),
+                "fuel_used": round(miles / self.ESTIMATED_MPG, 2),
                 "mpg": mpg,
             })
-        return sorted(result, key=lambda x: x["mpg"], reverse=True)
+        return sorted(result, key=lambda x: x["total_miles"], reverse=True)
 
     @timed()
     def idling_summary(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
@@ -370,16 +378,20 @@ class AnalyticsService:
     @timed()
     def emissions_estimate(self, since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
         """Estimate CO₂ emissions from fuel consumption.
+        
         EPA factor: ~20.0 lbs CO₂ per gallon of diesel.
+        Geotab API does not provide fuel_used, so fuel is estimated from distance
+        at the fleet-average MPG rate.
         """
         since, until = self._since(since), self._until(until)
-        fuel = self.db.scalar(
-            select(func.coalesce(func.sum(Trip.fuel_used), 0.0)).where(Trip.start_time.between(since, until))
+        total_miles = self.db.scalar(
+            select(func.coalesce(func.sum(Trip.distance_miles), 0.0)).where(Trip.start_time.between(since, until))
         ) or 0.0
+        estimated_fuel = float(total_miles) / self.ESTIMATED_MPG if total_miles else 0.0
         CO2_LBS_PER_GAL = 20.0
-        co2_lbs = float(fuel) * CO2_LBS_PER_GAL
+        co2_lbs = estimated_fuel * CO2_LBS_PER_GAL
         return {
-            "total_fuel_gal": round(float(fuel), 2),
+            "total_fuel_gal": round(estimated_fuel, 2),
             "co2_lbs": round(co2_lbs, 1),
             "co2_tons": round(co2_lbs / 2000, 2),
         }
