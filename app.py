@@ -100,11 +100,19 @@ AUTH_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
 AUTH_DOMAIN = os.getenv("DASHBOARD_LOGIN_DOMAIN", "").strip().lower()
 
 def verify_password(password: str) -> bool:
-    if not AUTH_PASSWORD and not AUTH_PASSWORD_HASH:
+    """Verify against pbkdf2_sha256$salt$digest format (matching old auth.security)."""
+    if not AUTH_PASSWORD_HASH and not AUTH_PASSWORD:
         return False
     if AUTH_PASSWORD_HASH:
-        digest = pbkdf2_hmac("sha256", password.encode(), b"fasthtml-dashboard", 120_000).hex()
-        return compare_digest(digest, AUTH_PASSWORD_HASH)
+        if not AUTH_PASSWORD_HASH.startswith("pbkdf2_sha256$"):
+            return False
+        try:
+            _, salt, digest = AUTH_PASSWORD_HASH.split("$", 2)
+        except ValueError:
+            return False
+        import hashlib
+        candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 250_000).hex()
+        return compare_digest(candidate, digest)
     return compare_digest(password, AUTH_PASSWORD or "")
 
 def email_allowed(email: str) -> bool:
