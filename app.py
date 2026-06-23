@@ -135,10 +135,22 @@ def require_login(req):
 SECTIONS = [
     ("fleet", "Fleet Overview", "📊"),
     ("vehicles", "Vehicles", "🚛"),
-    ("drivers", "Drivers", "👤"),
     ("maintenance", "Maintenance", "🔧"),
     ("map", "Fleet Map", "🗺️"),
 ]
+
+# Drivers section shown only if driver data exists
+def has_drivers(data: dict) -> bool:
+    return len(data.get("drivers", [])) > 0 and any(d.get("distance_driven", 0) > 0 for d in data["drivers"])
+
+def active_sections(data: dict) -> list:
+    sections = [("fleet", "Fleet Overview", "📊"),
+                ("vehicles", "Vehicles", "🚛")]
+    if has_drivers(data):
+        sections.append(("drivers", "Drivers", "👤"))
+    sections.extend([("maintenance", "Maintenance", "🔧"),
+                     ("map", "Fleet Map", "🗺️")])
+    return sections
 SWAP = dict(hx_target="#app", hx_swap="outerHTML", hx_indicator="#loading")
 ACCENT = "#2563eb"
 _ids = itertools.count()
@@ -398,9 +410,9 @@ def section_body(state, data):
 
 # ── Shell ──────────────────────────────────────────────────────────────────
 
-def sidebar(state):
+def sidebar(state, data):
     links = []
-    for key, label, icon in SECTIONS:
+    for key, label, icon in active_sections(data):
         active = "active" if state["section"] == key else ""
         links.append(A(Span(icon), Span(label), cls=active, hx_get=f"/view?section={key}", **SWAP))
     return Div(
@@ -424,7 +436,7 @@ def get_state(req):
 def app_shell(state):
     data = load_data()
     return Div(
-        sidebar(state),
+        sidebar(state, data),
         Div(header(), kpi_row(data), section_body(state, data), cls="main"),
         id="app", cls="layout")
 
