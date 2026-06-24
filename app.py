@@ -219,10 +219,15 @@ def kpi_row(data):
     s = data["summary"]
     spd = data["speed"]
     idl = data["idling"]
+    trends = data["trends"]
+    total_trips = sum(t.get("trips", 0) for t in trends)
+    daily_avg = round(s.total_fleet_miles / total_trips, 1) if total_trips else 0
     return Div(
         kpi_card("Active Vehicles", s.active_vehicles, f"of {s.total_vehicles} total"),
         kpi_card("Fleet Miles", s.total_fleet_miles, "Total distance"),
+        kpi_card("Total Trips", total_trips, f"{daily_avg} mi avg trip"),
         kpi_card("Idle Time", idl.get("idle_pct", 0), f"{idl.get('total_idle_hours', 0):.0f} hours", "%"),
+        kpi_card("Avg Speed", round(spd.get("avg_speed", 0), 1), f"Max {round(spd.get('max_speed', 0), 1)} mph", "mph"),
         kpi_card("Speeding Events", spd.get("speeding_count", 0), f"{spd.get('speeding_pct', 0):.1f}% of GPS"),
         cls="kpis",
     )
@@ -327,6 +332,35 @@ def fleet_map_chart(locs):
                       margin=dict(l=10, r=10, t=10, b=10))
     return render(fig)
 
+
+def trip_trend(trends):
+    """Daily trip count bar chart."""
+    if not trends:
+        return empty("No trip data")
+    df = pd.DataFrame(trends)
+    if df.empty or df["trips"].sum() == 0:
+        return empty("No trip data")
+    fig = go.Figure(go.Bar(
+        x=pd.to_datetime(df["day"]), y=df["trips"],
+        marker=dict(color="#0e7490"),
+        hovertemplate="%{x|%b %d}<br>%{y} trips<extra></extra>"))
+    fig.update_layout(showlegend=False)
+    fig.update_yaxes(gridcolor="#e2e8f0", dtick=1)
+    fig.update_xaxes(gridcolor="#f1f5f9", tickformat="%b %d", tickfont=dict(size=10))
+    return render(_layout(fig, 250))
+
+
+def vehicle_detail_table(util):
+    """Vehicle info table with make/model/year."""
+    if not util:
+        return empty("No vehicle data")
+    rows = "".join(
+        f"<tr><td>{u['label']}</td><td class='num'>{u['total_miles']:,.0f}</td>"
+        f"<td class='num'>{u['hours_driven']:.1f}</td>"
+        f"<td class='num'>{u['utilization_percentage']:.1f}%</td></tr>"
+        for u in util[:20])
+    return f"<div class='tbl-wrap'><table class='data'><thead><tr><th>Vehicle</th><th class='num'>Miles</th><th class='num'>Hours</th><th class='num'>Util %</th></tr></thead><tbody>{rows}</tbody></table></div>"
+
 # ── Tables ─────────────────────────────────────────────────────────────────
 
 def util_table(util):
@@ -367,13 +401,14 @@ def section_body(state, data):
     if sec == "fleet":
         return Div(
             Div(panel("Daily Mileage Trend", mileage_trend(data["trends"]), ACCENT),
-                panel("Vehicle Utilization", utilization_chart(data["utilization"]), "#0e7490"),
+                panel("Daily Trip Count", trip_trend(data["trends"]), "#0e7490"),
                 cls="grid two"),
+            Div(panel("Vehicle Utilization", utilization_chart(data["utilization"]), "#0e7490"),
+                panel("Vehicle Details", NotStr(vehicle_detail_table(data["utilization"])), ACCENT, scroll=True),
+                cls="grid two mt"),
             Div(panel("Speed Distribution", speed_dist(data["speed"]), "#ea580c"),
                 panel("Idle Time by Vehicle", idle_chart(data["idling"]), "#ea580c"),
                 cls="grid two mt"),
-            Div(panel("Vehicle Activity", NotStr(util_table(data["utilization"])), ACCENT, scroll=True),
-                cls="grid mt"),
             Div(panel("Fleet Locations", fleet_map_chart(data["locations"]), "#16a34a"),
                 cls="grid mt"),
         )
