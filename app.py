@@ -339,25 +339,20 @@ def fleet_map_chart(locs):
 
 
 def trip_trend(trends):
-    """Daily trip count bar chart with clean month labels."""
+    """Daily trip count bar chart."""
     if not trends:
         return empty("No trip data")
     df = pd.DataFrame(trends)
     if df.empty or df["trips"].sum() == 0:
         return empty("No trip data")
-    df["d"] = pd.to_datetime(df["day"])
-    # Only label the 1st of each month
-    labels = df[df["d"].dt.day == 1]
+    x = pd.to_datetime(df["day"])
     fig = go.Figure(go.Bar(
-        x=df["d"], y=df["trips"],
+        x=x, y=df["trips"],
         marker=dict(color="#0e7490"),
         hovertemplate="%{x|%b %d}<br>%{y} trips<extra></extra>"))
     fig.update_layout(showlegend=False)
-    fig.update_yaxes(gridcolor="#e2e8f0", dtick=1)
-    fig.update_xaxes(gridcolor="#f1f5f9",
-        tickvals=labels["d"].tolist() if not labels.empty else None,
-        ticktext=labels["d"].dt.strftime("%b").tolist() if not labels.empty else None,
-        tickfont=dict(size=10))
+    fig.update_xaxes(gridcolor="#f1f5f9")
+    fig.update_yaxes(gridcolor="#e2e8f0")
     return render(_layout(fig, 250))
 
 
