@@ -238,15 +238,20 @@ def mileage_trend(trends):
     if not trends: return empty("No trip data")
     df = pd.DataFrame(trends)
     if df.empty or df["mileage"].sum() == 0: return empty("No mileage data")
+    df["d"] = pd.to_datetime(df["day"])
+    labels = df[df["d"].dt.day == 1]
     fig = go.Figure(go.Scatter(
-        x=pd.to_datetime(df["day"]), y=df["mileage"],
+        x=df["d"], y=df["mileage"],
         mode="lines+markers", line=dict(color=ACCENT, width=3, shape="spline"),
         marker=dict(size=6, color=ACCENT), fill="tozeroy",
         fillcolor=_rgba(ACCENT, 0.10),
         hovertemplate="%{x|%b %d}<br>%{y:,.0f} miles<extra></extra>"))
     fig.update_layout(showlegend=False)
     fig.update_yaxes(gridcolor="#e2e8f0")
-    fig.update_xaxes(gridcolor="#f1f5f9", tickformat="%b %d", tickfont=dict(size=10))
+    fig.update_xaxes(gridcolor="#f1f5f9",
+        tickvals=labels["d"].tolist() if not labels.empty else None,
+        ticktext=labels["d"].dt.strftime("%b").tolist() if not labels.empty else None,
+        tickfont=dict(size=10))
     return render(_layout(fig, 300))
 
 def utilization_chart(util):
@@ -334,19 +339,25 @@ def fleet_map_chart(locs):
 
 
 def trip_trend(trends):
-    """Daily trip count bar chart."""
+    """Daily trip count bar chart with clean month labels."""
     if not trends:
         return empty("No trip data")
     df = pd.DataFrame(trends)
     if df.empty or df["trips"].sum() == 0:
         return empty("No trip data")
+    df["d"] = pd.to_datetime(df["day"])
+    # Only label the 1st of each month
+    labels = df[df["d"].dt.day == 1]
     fig = go.Figure(go.Bar(
-        x=pd.to_datetime(df["day"]), y=df["trips"],
+        x=df["d"], y=df["trips"],
         marker=dict(color="#0e7490"),
         hovertemplate="%{x|%b %d}<br>%{y} trips<extra></extra>"))
     fig.update_layout(showlegend=False)
     fig.update_yaxes(gridcolor="#e2e8f0", dtick=1)
-    fig.update_xaxes(gridcolor="#f1f5f9", tickformat="%b %d", tickfont=dict(size=10))
+    fig.update_xaxes(gridcolor="#f1f5f9",
+        tickvals=labels["d"].tolist() if not labels.empty else None,
+        ticktext=labels["d"].dt.strftime("%b").tolist() if not labels.empty else None,
+        tickfont=dict(size=10))
     return render(_layout(fig, 250))
 
 
