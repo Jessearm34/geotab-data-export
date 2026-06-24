@@ -148,14 +148,7 @@ def has_faults(data: dict) -> bool:
     return False
 
 def active_sections(data: dict) -> list:
-    sections = [("fleet", "Fleet Overview", "📊"),
-                ("vehicles", "Vehicles", "🚛")]
-    if has_drivers(data):
-        sections.append(("drivers", "Drivers", "👤"))
-    if has_faults(data):
-        sections.append(("maintenance", "Maintenance", "🔧"))
-    sections.extend([("map", "Fleet Map", "🗺️")])
-    return sections
+    return [("fleet", "Fleet Overview", "📊")]
 SWAP = dict(hx_target="#app", hx_swap="outerHTML", hx_indicator="#loading")
 ACCENT = "#2563eb"
 _ids = itertools.count()
@@ -381,34 +374,8 @@ def section_body(state, data):
                 cls="grid two mt"),
             Div(panel("Vehicle Activity", NotStr(util_table(data["utilization"])), ACCENT, scroll=True),
                 cls="grid mt"),
-        )
-
-    if sec == "vehicles":
-        return Div(
-            Div(panel("Vehicle Utilization", utilization_chart(data["utilization"]), ACCENT),
-                panel("Idle Time", idle_chart(data["idling"]), "#ea580c"),
-                cls="grid two"),
-            Div(panel("Vehicle Activity Details", NotStr(util_table(data["utilization"])), ACCENT, scroll=True),
+            Div(panel("Fleet Locations", fleet_map_chart(data["locations"]), "#16a34a"),
                 cls="grid mt"),
-        )
-
-    if sec == "drivers":
-        return Div(
-            Div(panel("Driver Distance", driver_chart(data["drivers"]), "#0e7490"),
-                panel("Driver Performance", NotStr(driver_table(data["drivers"])), "#0e7490", scroll=True),
-                cls="grid two"),
-        )
-
-    if sec == "maintenance":
-        return Div(
-            Div(panel("Fault Code Frequency", fault_chart(data["faults"]), "#dc2626"),
-                panel("Current Faults", NotStr(fault_table(data["faults"])), "#dc2626", scroll=True),
-                cls="grid two"),
-        )
-
-    if sec == "map":
-        return Div(
-            Div(panel("Fleet Locations", fleet_map_chart(data["locations"]), "#16a34a"), cls="grid"),
         )
 
     return Div()
